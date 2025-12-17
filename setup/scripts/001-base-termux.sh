@@ -1,20 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Detect platform
-PLATFORM=""
-if [[ -n "${TERMUX_VERSION:-}" ]]; then
-    PLATFORM="termux"
-elif [[ "$OSTYPE" == "darwin"* ]]; then
-    PLATFORM="macos"
-elif [[ -f /etc/arch-release ]]; then
-    PLATFORM="arch"
-else
-    PLATFORM="linux"
-fi
-
 # Exit early if not Termux
-if [[ "$PLATFORM" != "termux" ]]; then
+if [[ -z "$TERMUX_VERSION" ]]; then
     exit 0
 fi
 
@@ -27,7 +15,7 @@ pkg update -y
 pkg install -y \
     python \
     git \
-    tree \
-    jq
+    jq \
+    curl
 
 echo "✓ [Termux] Base dependencies installed"
