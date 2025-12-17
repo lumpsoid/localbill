@@ -90,10 +90,9 @@ main() {
         [[ -z "$link" ]] && continue
         
         if process_link "$link"; then
-            ((processed++))
-            echo "$link"
+            ((++processed))
         else
-            ((failed++))
+            ((++failed))
             echo "Error: Failed to process: $link" >&2
         fi
     done
