@@ -10,11 +10,10 @@ IFS=$'\n\t'
 #   - ../scripts/parser/rs_parser.py
 #   - ../scripts/mapper/invoice_json_to_md.py
 # =============================================================================
-PROJECT_ROOT="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/.." && pwd )"
 
 # Configuration
-OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_ROOT/data}"
-
+PROJECT_ROOT="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/.." && pwd )"
+CONFIG_LOADER="$PROJECT_ROOT/scripts/config/config_loader.sh"
 PYTHON="$PROJECT_ROOT/scripts/wrapper/python-run.sh"
 
 parser() {
@@ -24,35 +23,53 @@ mapper() {
     "$PYTHON" "$PROJECT_ROOT/scripts/mapper/invoice_json_to_md.py" "$@"
 }
 
-
-
-
-# Argument check
-if [[ $# -lt 1 ]]; then
-    echo "Error: Missing required URL argument." >&2
-    echo "Usage: $0 <link>" >&2
-    exit 1
-fi
-
-LINK="$1"
-
-# Basic validation
-if [[ ! "$LINK" =~ ^https?:// ]]; then
-    echo "Error: Invalid URL: $LINK" >&2
-    exit 1
-fi
-
-# Create output directory if missing
-mkdir -p "$OUTPUT_DIR"
-
-# Run processing pipeline
-{
-    echo "Processing link: $LINK"
-    parser "$LINK" | mapper --stdin --output-dir "$OUTPUT_DIR"
-} || {
-    echo "Error: Processing failed for $LINK" >&2
-    exit 1
+find_duplicate_links() {
+    "$PROJECT_ROOT/scripts/search/find-duplicate-links.sh" "$@"
 }
 
-echo "Success: Output written to $OUTPUT_DIR"
+sync_data() {
+    "$PROJECT_ROOT/bin/sync_data.sh" "$@"
+}
 
+main() {
+    # Argument check
+    if [[ $# -lt 1 ]]; then
+        echo "Error: Missing required URL argument." >&2
+        echo "Usage: $0 <link>" >&2
+        exit 1
+    fi
+
+    LINK="$1"
+
+    # Basic validation
+    if [[ ! "$LINK" =~ ^https?:// ]]; then
+        echo "Error: Invalid URL: $LINK" >&2
+        exit 1
+    fi
+
+    source "$CONFIG_LOADER"
+    TRANSACTION_DIR="${TRANSACTION_DIR:-$PROJECT_ROOT/data}"
+
+    # Create output directory if missing
+    mkdir -p "$TRANSACTION_DIR"
+
+    # Run processing pipeline
+    echo "Processing link: $LINK" >&2
+
+    if find_duplicate_links "$LINK"; then
+        echo "Duplicate found, skipping" >&2
+        exit 0
+    fi
+
+    # Process the link
+    parser "$LINK" | mapper --stdin --output-dir "$TRANSACTION_DIR" || {
+        echo "Error: Processing failed" >&2
+        exit 1
+    }
+
+    sync_data
+
+    echo "Success: Output written to $TRANSACTION_DIR"
+}
+
+main "$@"
