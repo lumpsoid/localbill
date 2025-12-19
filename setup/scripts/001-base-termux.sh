@@ -16,6 +16,7 @@ pkg install -y \
     python \
     git \
     jq \
-    curl
+    curl \
+    libxslt
 
 echo "✓ [Termux] Base dependencies installed"
