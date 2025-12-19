@@ -30,6 +30,8 @@ else
   COMMIT_MSG="Data sync: $TIMESTAMP - $COMMENT"
 fi
 
+git -C "$DATA_DIR" pull
+
 # Check for changes
 if [[ ! -n "$(git -C "$DATA_DIR" status --porcelain)" ]]; then
     echo "No changes detected in $DATA_DIR. Nothing to do."
