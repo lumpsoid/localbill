@@ -20,6 +20,8 @@ IFS=$'\n\t'
 PROJECT_ROOT="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/.." && pwd )"
 
 # Configuration
+DATA_DIR="${DATA_DIR:-$PROJECT_ROOT/data}"
+FAILED_FILE="$DATA_DIR/failed_links.txt"
 CONFIG_LOADER="$PROJECT_ROOT/scripts/config/config_loader.sh"
 QUEUED_LINKS="$PROJECT_ROOT/scripts/fetch/queued_links.sh"
 QUEUE_CLEANER="$PROJECT_ROOT/scripts/fetch/queue_cleaner.sh"
@@ -101,6 +103,7 @@ main() {
     local processed=0
     local failed=0
     local -a processed_links=()
+    local -a failed_links=()
     
     for link in "${links[@]}"; do
         # Skip empty lines
@@ -118,6 +121,7 @@ main() {
         else
             ((++failed))
             echo "Error: Failed to process: $link" >&2
+            failed_links+=("$link")
         fi
     done
     
@@ -129,6 +133,11 @@ main() {
         if [[ $? -ne 0 ]]; then
             echo "Warning: Failed to clean processed links from queue" >&2
         fi
+    fi
+
+    if [[ $failed -gt 0 ]]; then
+        printf '%s\n' "${failed_links[@]}" >> "$FAILED_FILE"
+        echo "Failed links appended to $FAILED_FILE." >&2
     fi
 
     sync_data
