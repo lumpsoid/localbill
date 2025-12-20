@@ -31,6 +31,10 @@ sync_data() {
     "$PROJECT_ROOT/bin/sync_data.sh" "$@"
 }
 
+check_internet() {
+  timeout 0.2 bash -c "</dev/tcp/1.1.1.1/53"
+}
+
 main() {
     # Argument check
     if [[ $# -lt 1 ]]; then
@@ -60,6 +64,19 @@ main() {
         echo "Duplicate found, skipping" >&2
         exit 0
     fi
+    
+    if ! check_internet; then
+    echo "No internet, queuing" >&2
+    
+    # Avoid duplicates
+    if ! grep -Fxq "$LINK" "$QUEUE_FILE" 2>/dev/null; then
+        echo "$LINK" >> "$QUEUE_FILE"
+
+        sync_data
+    fi
+    
+    exit 1 
+fi
 
     # Process the link
     parser "$LINK" | mapper --stdin --output-dir "$TRANSACTION_DIR" || {
