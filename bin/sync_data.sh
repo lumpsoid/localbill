@@ -34,10 +34,17 @@ fi
 # Prepare Commit Message
 COMMENT="${1:-""}"
 TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
-if [[ -z "$COMMENT" ]]; then
-  COMMIT_MSG="Data sync: $TIMESTAMP"
+
+if ! $HAS_INTERNET; then
+    COMMIT_MSG="Offline "
 else 
-  COMMIT_MSG="Data sync: $TIMESTAMP - $COMMENT"
+    COMMIT_MSG=""
+fi
+
+if [[ -z "$COMMENT" ]]; then
+  COMMIT_MSG="${COMMIT_MSG}Data sync: $TIMESTAMP"
+else 
+  COMMIT_MSG="${COMMIT_MSG}Data sync: $TIMESTAMP - $COMMENT"
 fi
 
 if $HAS_INTERNET; then
