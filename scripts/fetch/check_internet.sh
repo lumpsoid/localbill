@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-CACHE_FILE="/tmp/internet_status"
+CACHE_FILE="${TMPDIR:-/tmp}/internet_status"
 
 # If cache is less than 60 seconds old, use it
 if [[ -f "$CACHE_FILE" ]] && [[ $(find "$CACHE_FILE" -mmin -1) ]]; then
