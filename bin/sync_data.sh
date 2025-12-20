@@ -42,7 +42,7 @@ fi
 
 INTERNET_CHECK="$(check_internet)"
 
-if [ "$HAS_INTERNET" = true ]; then
+if $HAS_INTERNET; then
     git -C "$DATA_DIR" pull
 fi
 
@@ -57,7 +57,7 @@ echo "Changes detected. Staging and committing..."
 git -C "$DATA_DIR" add .
 git -C "$DATA_DIR" commit -m "$COMMIT_MSG"
 
-if [ "$HAS_INTERNET" = false ]; then
+if ! $HAS_INTERNET; then
   exit 1
 fi
 
