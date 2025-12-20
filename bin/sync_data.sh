@@ -40,8 +40,6 @@ else
   COMMIT_MSG="Data sync: $TIMESTAMP - $COMMENT"
 fi
 
-INTERNET_CHECK="$(check_internet)"
-
 if $HAS_INTERNET; then
     git -C "$DATA_DIR" pull
 fi
