@@ -32,7 +32,7 @@ sync_data() {
 }
 
 check_internet() {
-  timeout 0.2 bash -c "</dev/tcp/1.1.1.1/53"
+  "$PROJECT_ROOT/scripts/fetch/check_internet.sh"
 }
 
 main() {
@@ -66,17 +66,17 @@ main() {
     fi
     
     if ! check_internet; then
-    echo "No internet, queuing" >&2
-    
-    # Avoid duplicates
-    if ! grep -Fxq "$LINK" "$QUEUE_FILE" 2>/dev/null; then
-        echo "$LINK" >> "$QUEUE_FILE"
+        echo "No internet, queuing" >&2
+        
+        # Avoid duplicates
+        if ! grep -Fxq "$LINK" "$QUEUE_FILE" 2>/dev/null; then
+            echo "$LINK" >> "$QUEUE_FILE"
 
-        sync_data
+            sync_data
+        fi
+        
+        exit 1 
     fi
-    
-    exit 1 
-fi
 
     # Process the link
     parser "$LINK" | mapper --stdin --output-dir "$TRANSACTION_DIR" || {

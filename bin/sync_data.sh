@@ -21,6 +21,16 @@ if [ ! -d "$DATA_DIR/.git" ]; then
     exit 1
 fi
 
+check_internet() {
+  "$PROJECT_ROOT/scripts/fetch/check_internet.sh"
+}
+
+if check_internet; then
+    HAS_INTERNET=true
+else
+    HAS_INTERNET=false
+fi
+
 # Prepare Commit Message
 COMMENT="${1:-""}"
 TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
@@ -30,7 +40,11 @@ else
   COMMIT_MSG="Data sync: $TIMESTAMP - $COMMENT"
 fi
 
-git -C "$DATA_DIR" pull
+INTERNET_CHECK="$(check_internet)"
+
+if [ "$HAS_INTERNET" = true ]; then
+    git -C "$DATA_DIR" pull
+fi
 
 # Check for changes
 if [[ ! -n "$(git -C "$DATA_DIR" status --porcelain)" ]]; then
@@ -42,6 +56,10 @@ echo "Changes detected. Staging and committing..."
 
 git -C "$DATA_DIR" add .
 git -C "$DATA_DIR" commit -m "$COMMIT_MSG"
+
+if [ "$HAS_INTERNET" = false ]; then
+  exit 1
+fi
 
 # Push changes to remote origin
 # Determine current branch name dynamically
