@@ -12,6 +12,4 @@ if [ -z "$1" ]; then
 fi
 
 # Inject the Termux-Exec library to handle shebang redirection
-export LD_PRELOAD="$PREFIX/lib/libtermux-exec.so"
-
-exec "$@"
+LD_PRELOAD="$PREFIX/lib/libtermux-exec.so" "$PREFIX/bin/bash" "$@"
