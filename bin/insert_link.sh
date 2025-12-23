@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 IFS=$'\n\t'
-
 # =============================================================================
 # Script: insert_link.sh
 # Purpose: Process a URL through parser and mapper into data directory
@@ -82,6 +81,9 @@ main() {
     parser "$LINK" | "$PROJECT_ROOT/scripts/sanitize/sanitize_rs.pl" | mapper --stdin --output-dir "$TRANSACTION_DIR" || {
       echo "Pipeline failed" >&2
       echo "$LINK" >> "$FAILED_LINKS"
+
+      sync_data
+
       exit 1
     }
 
