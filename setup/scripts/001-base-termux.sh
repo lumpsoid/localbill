@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 # Exit early if not Termux
-if [[ -z "$TERMUX_VERSION" ]]; then
+if [[ ! -n "$TERMUX_VERSION" ]]; then
     exit 0
 fi
 
