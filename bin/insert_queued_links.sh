@@ -21,7 +21,7 @@ PROJECT_ROOT="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/.." && pwd )"
 
 # Configuration
 DATA_DIR="${DATA_DIR:-$PROJECT_ROOT/data}"
-FAILED_FILE="$DATA_DIR/failed_links.txt"
+FAILED_LINKS="$DATA_DIR/failed_links.txt"
 CONFIG_LOADER="$PROJECT_ROOT/scripts/config/config_loader.sh"
 QUEUED_LINKS="$PROJECT_ROOT/scripts/fetch/queued_links.sh"
 QUEUE_CLEANER="$PROJECT_ROOT/scripts/fetch/queue_cleaner.sh"
@@ -136,8 +136,8 @@ main() {
     fi
 
     if [[ $failed -gt 0 ]]; then
-        printf '%s\n' "${failed_links[@]}" >> "$FAILED_FILE"
-        echo "Failed links appended to $FAILED_FILE." >&2
+        printf '%s\n' "${failed_links[@]}" >> "$FAILED_LINKS"
+        echo "Failed links appended to $FAILED_LINKS." >&2
     fi
 
     sync_data

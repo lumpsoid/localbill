@@ -23,7 +23,7 @@ TRANSACTION_DIR="${TRANSACTION_DIR:-$PROJECT_ROOT/data/transactions}"
 DATA_DIR="${DATA_DIR:-$PROJECT_ROOT/data}"
 
 SCANS_FILE="$HOME/downloads/scans.txt"
-FAILED_FILE="$DATA_DIR/failed_links.txt"
+FAILED_LINKS="$DATA_DIR/failed_links.txt"
 
 CONFIG_LOADER="$PROJECT_ROOT/scripts/config/config_loader.sh"
 PYTHON="$PROJECT_ROOT/scripts/wrapper/python-run.sh"
@@ -77,7 +77,7 @@ main() {
     
     mkdir -p "$DATA_DIR"
     mkdir -p "$TRANSACTION_DIR"
-    mkdir -p "$(dirname "$FAILED_FILE")"
+    mkdir -p "$(dirname "$FAILED_LINKS")"
     
     # Read links from file into array
     mapfile -t links < "$SCANS_FILE"
@@ -121,9 +121,9 @@ main() {
         echo "All links processed successfully. Deleted $SCANS_FILE" >&2
     else
         # Append failed links to failed_links.txt and delete scans file
-        printf '%s\n' "${failed_links[@]}" >> "$FAILED_FILE"
+        printf '%s\n' "${failed_links[@]}" >> "$FAILED_LINKS"
         rm -f "$SCANS_FILE"
-        echo "Failed links appended to $FAILED_FILE. Deleted $SCANS_FILE" >&2
+        echo "Failed links appended to $FAILED_LINKS. Deleted $SCANS_FILE" >&2
     fi
     
     sync_data
