@@ -80,8 +80,9 @@ main() {
 
     # Process the link
     parser "$LINK" | "$PROJECT_ROOT/scripts/sanitize/sanitize_rs.pl" | mapper --stdin --output-dir "$TRANSACTION_DIR" || {
-        echo "Error: Processing failed" >&2
-        exit 1
+      echo "Pipeline failed" >&2
+      echo "$LINK" >> "$FAILED_LINKS"
+      exit 1
     }
 
     sync_data
