@@ -28,7 +28,7 @@ QUEUE_CLEANER="$PROJECT_ROOT/scripts/fetch/queue_cleaner.sh"
 PYTHON="$PROJECT_ROOT/scripts/wrapper/python-run.sh"
 
 parser() {
-    "$PYTHON" "$PROJECT_ROOT/scripts/parser/rs_parser.py" "$@"
+    "$PYTHON" "$PROJECT_ROOT/scripts/parser/rs_parser.py" "$@" | "$PROJECT_ROOT/scripts/sanitize/sanitize_rs.pl"
 }
 mapper() {
     "$PYTHON" "$PROJECT_ROOT/scripts/mapper/invoice_json_to_md.py" "$@"

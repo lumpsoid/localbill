@@ -29,7 +29,7 @@ CONFIG_LOADER="$PROJECT_ROOT/scripts/config/config_loader.sh"
 PYTHON="$PROJECT_ROOT/scripts/wrapper/python-run.sh"
 
 parser() {
-    "$PYTHON" "$PROJECT_ROOT/scripts/parser/rs_parser.py" "$@"
+    "$PYTHON" "$PROJECT_ROOT/scripts/parser/rs_parser.py" "$@" | "$PROJECT_ROOT/scripts/sanitize/sanitize_rs.pl"
 }
 
 mapper() {
