@@ -25,10 +25,27 @@ check_internet() {
   "$PROJECT_ROOT/scripts/fetch/check_internet.sh"
 }
 
+check_git_remote() {
+  local timeout_sec=10
+  # ls-remote --heads checks connection and remote references without downloading data
+  if timeout "$timeout_sec" git -C "$DATA_DIR" ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
+    return 0 # Success
+  else
+    return 1 # Timeout or server unreachable
+  fi
+}
+
+# Initial Check
 if check_internet; then
+  echo "Internet detected, verifying Git server access..."
+  if check_git_remote; then
     HAS_INTERNET=true
-else
+  else
+    echo "Warning: Internet is up, but Git server is unreachable. Switching to offline mode."
     HAS_INTERNET=false
+  fi
+else
+  HAS_INTERNET=false
 fi
 
 # Prepare Commit Message
