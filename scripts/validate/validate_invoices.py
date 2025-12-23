@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 
-from pathlib import Path
-import os
+import argparse
 import sys
+from pathlib import Path
+
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
@@ -54,25 +55,45 @@ def iter_yaml_files(target: Path):
 
 
 def main() -> int:
-    target_env = os.getenv("TARGET")
-    if not target_env:
-        print("TARGET environment variable is not set", file=sys.stderr)
-        return 1
-    target = Path(target_env)
+    parser = argparse.ArgumentParser(description="Transaction processor")
 
-    schema_env = os.getenv("SCHEMA")
-    if not schema_env:
-        print("SCHEMA environment variable is not set", file=sys.stderr)
-        return 1
-    schema = load_yaml(Path(schema_env))
+    # Positional parameter: dir
+    # No prefix means it is required by default
+    parser.add_argument("dir", type=Path, help="The transaction directory")
+
+    # Named/Optional-style flag: --schema
+    # Setting required=True makes the flag mandatory despite the '--' prefix
+    parser.add_argument("--schema", required=True, help="The schema definition")
+
+    # Boolean Flags
+    parser.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_on_error",
+        action="store_true",
+        help="Continue processing even if an error occurs",
+    )
+
+    parser.add_argument(
+        "-e",
+        "--errors-only",
+        dest="print_error_files_only",
+        action="store_true",
+        help="Only print filenames that contain errors",
+    )
+
+    args = parser.parse_args()
+
+    target = Path(args.dir)
+    schema = load_yaml(Path(args.schema))
 
     yaml_files = list(iter_yaml_files(target))
     if not yaml_files:
         print(f"No YAML files found in {target}", file=sys.stderr)
         return 1
 
-    continue_on_error = os.getenv("CONTINUE_ON_ERROR", "0") == "1"
-    print_error_files_only = os.getenv("PRINT_ERROR_FILES_ONLY", "0") == "1"
+    continue_on_error = args.continue_on_error
+    print_error_files_only = args.print_error_files_only
 
     has_errors = False
 
