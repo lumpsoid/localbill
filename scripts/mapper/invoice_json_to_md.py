@@ -16,9 +16,14 @@ def slugify(text: str) -> str:
 
 
 def generate_item_markdown(invoice: dict, item: dict) -> str:
-    """Convert a single item to one Markdown document."""
+    """Convert a single item to one Markdown document with a block scalar for notes."""
 
-    notes = invoice.get("raw_bill_text", "").replace('"', '\\"')
+    # Get the notes and prepare for indentation
+    raw_notes = invoice.get("raw_bill_text", "")
+
+    # Indent every line of the notes by 4 spaces
+    # This ensures it stays valid within the YAML block scalar
+    indented_notes = "\n".join(f"    {line}" for line in raw_notes.splitlines())
 
     yaml = [
         "---",
@@ -32,7 +37,8 @@ def generate_item_markdown(invoice: dict, item: dict) -> str:
         f"country: {invoice['country'].lower()}",
         f'link: "{invoice["url"]}"',
         "tags: []",
-        f'notes: "{notes}"',
+        "notes: |",
+        indented_notes,
         "---",
         "",
     ]
