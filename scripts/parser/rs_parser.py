@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import sys
+import argparse
 import json
 import re
 import time
@@ -224,24 +226,31 @@ class RsParser:
 
 
 def main():
-    """Main function to run the parser"""
-    import sys
+    parser_arg = argparse.ArgumentParser(description="Parse invoice data from a URL.")
 
-    if len(sys.argv) < 2:
-        print("Usage: python parser.py <invoice_url>")
+    parser_arg.add_argument("url", help="The URL of the invoice to be parsed")
+    parser_arg.add_argument(
+        "--pretty-print",
+        action="store_true",
+        help="Format the JSON output with indentation",
+    )
+
+    args = parser_arg.parse_args()
+
+    url = args.url.strip()
+    if not url:
+        print("Error: <invoice_url> cannot be empty.")
         sys.exit(1)
 
-    url = sys.argv[1].strip()
-    if len(url) == 0:
-        print("Usage: python parser.py <invoice_url>")
-        print("<invoice_url> is empty")
-        sys.exit(1)
+    indent_val = 2 if args.pretty_print else None
 
     parser = RsParser()
 
     try:
         result = parser.parse(url)
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+
+        print(json.dumps(result, ensure_ascii=False, indent=indent_val))
+
     except Exception as e:
         error_result = {"error": str(e), "success": False}
         print(json.dumps(error_result, indent=2))
