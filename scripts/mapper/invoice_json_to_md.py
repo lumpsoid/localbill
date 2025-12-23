@@ -27,7 +27,7 @@ def generate_item_markdown(invoice: dict, item: dict) -> str:
 
     yaml = [
         "---",
-        f"date: '{invoice['date'][:10]}'",
+        f'date: "{invoice["date"]}"',
         f'retailer: "{invoice["retailer"]}"',
         f'name: "{item["name"]}"',
         f"quantity: {item['quantity']}",
