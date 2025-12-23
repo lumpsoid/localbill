@@ -22,7 +22,7 @@ PROJECT_ROOT="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/.." && pwd )"
 TRANSACTION_DIR="${TRANSACTION_DIR:-$PROJECT_ROOT/data/transactions}"
 DATA_DIR="${DATA_DIR:-$PROJECT_ROOT/data}"
 
-SCANS_FILE="$HOME/downloads/scans.txt"
+SCANS_FILE="${1:-$HOME/downloads/scans.txt}"
 FAILED_LINKS="$DATA_DIR/failed_links.txt"
 
 CONFIG_LOADER="$PROJECT_ROOT/scripts/config/config_loader.sh"
