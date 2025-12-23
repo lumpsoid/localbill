@@ -67,12 +67,9 @@ class RsParser:
     def query_node(
         self, tree: html.HtmlElement, xpath: str
     ) -> Optional[html.HtmlElement]:
-        """Query a single node using xpath"""
+        """Returns the node if found, otherwise None"""
         nodes = tree.xpath(xpath)
-        if len(nodes) == 0:
-            print(f"Warning: XPath '{xpath}' returned no results")
-            return None
-        return nodes[0]
+        return nodes[0] if nodes else None
 
     def fetch_items(self, tree: html.HtmlElement) -> List[Dict[str, Any]]:
         """Fetch detailed item information from the API"""
@@ -160,27 +157,39 @@ class RsParser:
                     bill_node = self.query_node(tree, self.BILL_XPATH)
                     name_node = self.query_node(tree, self.NAME_XPATH)
 
-                    # Check if all nodes were found using 'is not None'
-                    if any(
-                        node is None
-                        for node in [
-                            invoice_node,
-                            price_node,
-                            date_node,
-                            bill_node,
-                            name_node,
-                        ]
-                    ):
-                        raise ValueError("Required fields not found in HTML")
+                    required_fields = {
+                        "invoice_number": self.INVOICE_XPATH,
+                        "price": self.PRICE_XPATH,
+                        "buy_date": self.BUY_DATE_XPATH,
+                        "bill": self.BILL_XPATH,
+                        "name": self.NAME_XPATH,
+                    }
+
+                    nodes = {}
+                    missing_fields = []
+
+                    for field_name, xpath in required_fields.items():
+                        node = self.query_node(tree, xpath)
+                        if node is not None:
+                            nodes[field_name] = node
+                        else:
+                            missing_fields.append(f"{field_name} (XPath: {xpath})")
+
+                    if missing_fields:
+                        # Raise an error that contains the full list of missing items
+                        error_msg = "Missing required fields: " + ", ".join(
+                            missing_fields
+                        )
+                        raise ValueError(error_msg)
 
                     # Extract text content
-                    invoice_number = self.clean_whitespace(invoice_node.text_content())
-                    date_string = self.clean_whitespace(date_node.text_content())
+                    invoice_number = self.clean_whitespace(nodes["invoice_number"].text_content())
+                    date_string = self.clean_whitespace(nodes["buy_date"].text_content())
                     price_string = self.clean_whitespace(
-                        self.clean_price(price_node.text_content())
+                        self.clean_price(nodes["price"].text_content())
                     )
-                    bill_text = bill_node.text_content()
-                    shop_name = name_node.text_content()
+                    bill_text = nodes["bill"].text_content()
+                    shop_name = nodes["name"].text_content()
 
                     # Parse date
                     date_time = self.parse_date(date_string)
