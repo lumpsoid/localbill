@@ -121,29 +121,29 @@ def main():
         item_slug = slugify(item["name"])
         base_filename = f"{invoice_date}-{item_slug}"
 
-        counter = 0
-        while True:
-            if counter == 0:
-                filename = base_filename
-            else:
-                filename = f"{base_filename}-{num_pad(counter)}"
-
-            basename = f"{filename}.{extension}"
-            filepath = out_dir / basename
-
-            if not filepath.exists():
-                break
-
-            counter += 1
-
         md_content = generate_item_markdown(invoice, item)
 
         if write_files:
+            counter = 0
+            while True:
+                if counter == 0:
+                    filename = base_filename
+                else:
+                    filename = f"{base_filename}-{num_pad(counter)}"
+
+                basename = f"{filename}.{extension}"
+                filepath = out_dir / basename
+
+                if not filepath.exists():
+                    break
+
+                counter += 1
+
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(md_content)
             print(f"Saved: {filepath}")
         else:
-            print(f"# Filename: {filename}")
+            print(f"# Base filename: {base_filename}")
             print(md_content)
 
     if write_files:
