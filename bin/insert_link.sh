@@ -17,7 +17,7 @@ CONFIG_LOADER="$PROJECT_ROOT/scripts/config/config_loader.sh"
 PYTHON="$PROJECT_ROOT/scripts/wrapper/python-run.sh"
 
 parser() {
-    "$PYTHON" "$PROJECT_ROOT/scripts/parser/rs_parser.py" "$@" | "$PROJECT_ROOT/scripts/sanitize/sanitize_rs.pl"
+    "$PYTHON" "$PROJECT_ROOT/scripts/parser/rs_parser.py" "$@"
 }
 mapper() {
     "$PYTHON" "$PROJECT_ROOT/scripts/mapper/invoice_json_to_md.py" "$@"
@@ -79,7 +79,7 @@ main() {
     fi
 
     # Process the link
-    parser "$LINK" | mapper --stdin --output-dir "$TRANSACTION_DIR" || {
+    parser "$LINK" | "$PROJECT_ROOT/scripts/sanitize/sanitize_rs.pl" | mapper --stdin --output-dir "$TRANSACTION_DIR" || {
         echo "Error: Processing failed" >&2
         exit 1
     }
