@@ -112,6 +112,10 @@ def main():
     write_files = args.output_dir is not None
     out_dir = None
 
+    if not invoice["success"]:
+        print(invoice, file=sys.stderr)
+        sys.exit(1)
+
     if write_files:
         out_dir = Path(args.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
