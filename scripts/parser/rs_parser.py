@@ -151,12 +151,6 @@ class RsParser:
                 # Only parse static fields on first attempt
                 if attempt == 1:
                     # Extract all required fields
-                    invoice_node = self.query_node(tree, self.INVOICE_XPATH)
-                    price_node = self.query_node(tree, self.PRICE_XPATH)
-                    date_node = self.query_node(tree, self.BUY_DATE_XPATH)
-                    bill_node = self.query_node(tree, self.BILL_XPATH)
-                    name_node = self.query_node(tree, self.NAME_XPATH)
-
                     required_fields = {
                         "invoice_number": self.INVOICE_XPATH,
                         "price": self.PRICE_XPATH,
