@@ -18,6 +18,7 @@ pkg install -y \
     jq \
     curl \
     libxslt \
-    ripgrep
+    ripgrep \
+    perl
 
 echo "✓ [Termux] Base dependencies installed"
