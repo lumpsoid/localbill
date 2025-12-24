@@ -194,8 +194,9 @@ class RsParser:
                 # Try to fetch items
                 items = self.fetch_items(tree)
 
-                # Success! Build result
+                # Success
                 result = {
+                    "success": True,
                     "invoice_number": invoice_number,
                     "retailer": shop_name,
                     "date": date_time.isoformat(),
