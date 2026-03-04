@@ -73,7 +73,8 @@ fn process_local(config: &Config, no_sync: bool) -> Result<()> {
     for url in &urls {
         eprint!("  {url} … ");
         let args = InsertArgs {
-            url: url.clone(),
+            url: Some(url.clone()),
+            file: None,
             dry_run: false,
             no_sync,
             force: false,
@@ -138,7 +139,8 @@ fn process_remote(config: &Config, no_sync: bool) -> Result<()> {
     for url in &urls {
         eprint!("  {url} … ");
         let args = InsertArgs {
-            url: url.clone(),
+            url: Some(url.clone()),
+            file: None,
             dry_run: false,
             no_sync,
             force: false,
