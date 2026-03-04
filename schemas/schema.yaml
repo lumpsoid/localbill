@@ -103,31 +103,31 @@ properties:
           pattern: "^[A-Z]{3}$"
 
   discounts:
-  type: array
-  items:
-    type: object
-    additionalProperties: false
-    required:
-      - discount
-      - amount
-      - currency
-    properties:
-      discount:
-        type: string
-      description:
-        type: string
-      code:
-        type: string
-      type:
-        type: string
-        enum: [percentage, fixed]
-      percent:
-        type: number
-        minimum: 0
-        maximum: 100
-      amount:
-        type: number
-        minimum: 0
-      currency:
-        type: string
-        pattern: "^[A-Z]{3}$"
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required:
+        - discount
+        - amount
+        - currency
+      properties:
+        discount:
+          type: string
+        description:
+          type: string
+        code:
+          type: string
+        type:
+          type: string
+          enum: [percentage, fixed]
+        percent:
+          type: number
+          minimum: 0
+          maximum: 100
+        amount:
+          type: number
+          minimum: 0
+        currency:
+          type: string
+          pattern: "^[A-Z]{3}$"

@@ -12,6 +12,9 @@ pub struct Config {
     pub api_host: String,
     pub api_port: u16,
     pub api_endpoint: String,
+    /// Path to the JSON Schema file (YAML or JSON) used by `localbill validate`.
+    /// Set via `SCHEMA_FILE` in the config file or environment.
+    pub schema_file: Option<PathBuf>,
 }
 
 impl Config {
@@ -92,6 +95,8 @@ pub fn load(override_path: Option<&std::path::Path>) -> Result<Config> {
         .unwrap_or(8087u16);
     let api_endpoint = get("API_ENDPOINT").unwrap_or_else(|| "/queue".to_string());
 
+    let schema_file = get("SCHEMA_FILE").map(PathBuf::from);
+
     Ok(Config {
         transaction_dir,
         data_dir,
@@ -100,6 +105,7 @@ pub fn load(override_path: Option<&std::path::Path>) -> Result<Config> {
         api_host,
         api_port,
         api_endpoint,
+        schema_file,
     })
 }
 
