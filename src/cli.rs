@@ -43,7 +43,12 @@ pub enum Command {
 #[derive(Args)]
 pub struct InsertArgs {
     /// Serbian fiscal invoice URL
-    pub url: String,
+    #[arg(required_unless_present = "file")]
+    pub url: Option<String>,
+
+    /// Path to a file containing one invoice URL per line
+    #[arg(long, short = 'f', value_name = "PATH", conflicts_with = "url")]
+    pub file: Option<PathBuf>,
 
     /// Print parsed files to stdout; do not write to disk
     #[arg(long)]

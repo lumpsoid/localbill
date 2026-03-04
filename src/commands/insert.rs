@@ -8,15 +8,46 @@ use crate::invoice::{mapper, parser};
 use crate::net;
 
 pub fn run(args: InsertArgs, config: &Config) -> Result<()> {
-    let url = args.url.trim().to_string();
+    if let Some(file_path) = &args.file {
+        let contents = fs::read_to_string(file_path)
+            .map_err(|e| Error::Io(e))?;
+        let urls: Vec<&str> = contents
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
 
+        if urls.is_empty() {
+            eprintln!("No URLs found in file.");
+            return Ok(());
+        }
+
+        eprintln!("Processing {} URL(s) from file.", urls.len());
+        let mut errors = 0usize;
+        for url in urls {
+            if let Err(e) = run_one(url, &args, config) {
+                eprintln!("Error processing {url}: {e}");
+                errors += 1;
+            }
+        }
+        if errors > 0 {
+            return Err(Error::Parse(format!("{errors} URL(s) failed to process")));
+        }
+        Ok(())
+    } else {
+        let url = args.url.as_deref().unwrap_or("").trim().to_string();
+        run_one(&url, &args, config)
+    }
+}
+
+fn run_one(url: &str, args: &InsertArgs, config: &Config) -> Result<()> {
     if url.is_empty() {
         return Err(Error::Parse("URL must not be empty".to_string()));
     }
 
     // ── Duplicate check ───────────────────────────────────────────────────────
     if !args.force && config.transaction_dir.exists() {
-        if is_duplicate(&url, &config.transaction_dir) {
+        if is_duplicate(url, &config.transaction_dir) {
             eprintln!("Skipped: URL already recorded (use --force to override):\n  {url}");
             return Ok(());
         }
@@ -25,7 +56,7 @@ pub fn run(args: InsertArgs, config: &Config) -> Result<()> {
     // ── Offline → queue ───────────────────────────────────────────────────────
     if !net::has_internet() {
         eprintln!("No internet connection – queuing URL for later processing.");
-        queue_url(&url, &config.queue_file)?;
+        queue_url(url, &config.queue_file)?;
         // Best-effort offline sync (commits any pending local changes).
         let _ = crate::commands::sync::commit_and_push(
             &config.data_dir,
@@ -38,11 +69,11 @@ pub fn run(args: InsertArgs, config: &Config) -> Result<()> {
 
     // ── Parse ─────────────────────────────────────────────────────────────────
     eprintln!("Parsing: {url}");
-    let invoice = match parser::parse(&url) {
+    let invoice = match parser::parse(url) {
         Ok(inv) => inv,
         Err(e) => {
             eprintln!("Failed to parse invoice: {e}");
-            record_failure(&url, &config.failed_links_file)?;
+            record_failure(url, &config.failed_links_file)?;
             return Err(e);
         }
     };
