@@ -18,7 +18,7 @@ serde_yaml = "0.9"
 serde_json = "1"
 
 # Minimal synchronous HTTP client (no async runtime)
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3.2.0", features = ["json"] }
 
 # HTML parsing for Serbian fiscal invoice pages
 scraper = "0.20"

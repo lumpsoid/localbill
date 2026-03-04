@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),
-    Http(Box<ureq::Error>),
+    Http(ureq::Error),
     Json(serde_json::Error),
     Yaml(serde_yaml::Error),
     Parse(String),
@@ -22,7 +22,13 @@ pub struct ValidationError {
 
 impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} → {}: {}", self.path.display(), self.field, self.message)
+        write!(
+            f,
+            "{} → {}: {}",
+            self.path.display(),
+            self.field,
+            self.message
+        )
     }
 }
 
@@ -62,7 +68,7 @@ impl From<std::io::Error> for Error {
 
 impl From<ureq::Error> for Error {
     fn from(e: ureq::Error) -> Self {
-        Error::Http(Box::new(e))
+        Error::Http(e)
     }
 }
 

@@ -92,10 +92,7 @@ fn process_local(config: &Config, no_sync: bool) -> Result<()> {
     }
 
     // Remove successfully-processed URLs from the queue.
-    let remaining: Vec<String> = urls
-        .into_iter()
-        .filter(|u| failed.contains(u))
-        .collect();
+    let remaining: Vec<String> = urls.into_iter().filter(|u| failed.contains(u)).collect();
     write_queue(&config.queue_file, &remaining)?;
 
     println!(
@@ -116,7 +113,10 @@ fn process_remote(config: &Config, no_sync: bool) -> Result<()> {
     let api_url = config.api_base_url();
     eprintln!("Fetching queue from {api_url}…");
 
-    let response: serde_json::Value = ureq::get(&api_url).call()?.into_json()?;
+    let response: serde_json::Value = ureq::get(&api_url)
+        .call()?
+        .body_mut()
+        .read_json::<serde_json::Value>()?;
 
     let items = response["items"]
         .as_array()
@@ -177,7 +177,8 @@ fn remove_from_remote_queue(config: &Config, urls: &[String]) -> Result<()> {
     let api_url = config.api_base_url();
     let body = serde_json::json!({ "items": urls });
     ureq::delete(&api_url)
-        .set("Content-Type", "application/json")
+        .force_send_body()
+        .header("Content-Type", "application/json")
         .send_json(&body)?;
     Ok(())
 }

@@ -12,7 +12,10 @@ const SPECIFICATIONS_URL: &str = "https://suf.purs.gov.rs/specifications";
 /// Parse a Serbian fiscal invoice URL, retrying up to `max_attempts` times
 /// when the token endpoint returns an error (tokens can expire mid-request).
 pub fn parse(url: &str) -> Result<Invoice> {
-    let agent = ureq::AgentBuilder::new().user_agent(USER_AGENT).build();
+    let agent = ureq::Agent::config_builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .into();
     parse_with_agent(url, &agent, 3)
 }
 
@@ -47,8 +50,9 @@ fn try_parse(url: &str, agent: &ureq::Agent) -> Result<Invoice> {
     let body = agent
         .get(url)
         .call()?
-        .into_string()
-        .map_err(Error::Io)?;
+        .body_mut()
+        .read_to_string()
+        .map_err(Error::Http)?;
 
     let doc = Html::parse_document(&body);
 
@@ -106,11 +110,7 @@ fn extract_token(html: &str) -> Result<String> {
 
 // ── Items API ─────────────────────────────────────────────────────────────────
 
-fn fetch_items(
-    agent: &ureq::Agent,
-    invoice_number: &str,
-    token: &str,
-) -> Result<Vec<InvoiceItem>> {
+fn fetch_items(agent: &ureq::Agent, invoice_number: &str, token: &str) -> Result<Vec<InvoiceItem>> {
     let body = format!(
         "invoiceNumber={}&token={}",
         percent_encode(invoice_number),
@@ -119,9 +119,10 @@ fn fetch_items(
 
     let response: serde_json::Value = agent
         .post(SPECIFICATIONS_URL)
-        .set("Content-Type", "application/x-www-form-urlencoded")
-        .send_string(&body)?
-        .into_json()?;
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .send(&body)?
+        .body_mut()
+        .read_json::<serde_json::Value>()?;
 
     if !response["success"].as_bool().unwrap_or(false) {
         return Err(Error::Parse("Failed to fetch invoice items".to_string()));
@@ -165,7 +166,6 @@ fn parse_date(s: &str) -> Result<String> {
     let (date_part, time_part) = s
         .split_once(' ')
         .ok_or_else(|| Error::Parse(format!("expected space in date string: '{s}'")))?;
-
     // "15.03.2024." – the trailing dot must be stripped first.
     let date_part = date_part.trim_end_matches('.');
     let segments: Vec<&str> = date_part.split('.').collect();
