@@ -1,0 +1,25 @@
+[package]
+name = "localbill"
+version = "0.1.0"
+edition = "2021"
+description = "Local billing and invoice management CLI"
+
+[[bin]]
+name = "localbill"
+path = "src/main.rs"
+
+[dependencies]
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Serialisation: YAML frontmatter and JSON API responses
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+
+# Minimal synchronous HTTP client (no async runtime)
+ureq = { version = "2", features = ["json"] }
+
+# HTML parsing for Serbian fiscal invoice pages
+scraper = "0.20"
+jsonschema = { version = "0.44.1", default-features = false }
