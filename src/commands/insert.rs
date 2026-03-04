@@ -7,24 +7,44 @@ use crate::error::{Error, Result};
 use crate::invoice::{mapper, parser};
 use crate::net;
 
+/// The result of attempting to load URLs from a file.
+enum LoadedUrls {
+    /// At least one URL was found.
+    Found(Vec<String>),
+    /// The file was read successfully but contained no usable URLs.
+    Empty,
+}
+
+/// Reads `path`, strips blank lines and `#`-comments, and returns the URLs.
+fn load_urls_from_file(path: &Path) -> Result<LoadedUrls> {
+    let contents = fs::read_to_string(path).map_err(Error::Io)?;
+    let urls: Vec<String> = contents
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_owned)
+        .collect();
+
+    if urls.is_empty() {
+        Ok(LoadedUrls::Empty)
+    } else {
+        Ok(LoadedUrls::Found(urls))
+    }
+}
+
 pub fn run(args: InsertArgs, config: &Config) -> Result<()> {
     if let Some(file_path) = &args.file {
-        let contents = fs::read_to_string(file_path)
-            .map_err(|e| Error::Io(e))?;
-        let urls: Vec<&str> = contents
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .collect();
-
-        if urls.is_empty() {
-            eprintln!("No URLs found in file.");
-            return Ok(());
-        }
+        let urls = match load_urls_from_file(file_path)? {
+            LoadedUrls::Empty => {
+                eprintln!("No URLs found in file.");
+                return Ok(());
+            }
+            LoadedUrls::Found(urls) => urls,
+        };
 
         eprintln!("Processing {} URL(s) from file.", urls.len());
         let mut errors = 0usize;
-        for url in urls {
+        for url in &urls {
             if let Err(e) = run_one(url, &args, config) {
                 eprintln!("Error processing {url}: {e}");
                 errors += 1;
@@ -88,7 +108,10 @@ fn run_one(url: &str, args: &InsertArgs, config: &Config) -> Result<()> {
         // ── Sync ──────────────────────────────────────────────────────────────
         if !args.no_sync {
             if let Err(e) = crate::commands::sync::run(
-                crate::cli::SyncArgs { message: None, no_push: false },
+                crate::cli::SyncArgs {
+                    message: None,
+                    no_push: false,
+                },
                 config,
             ) {
                 eprintln!("Warning: sync failed: {e}");
@@ -146,4 +169,60 @@ fn record_failure(url: &str, failed_file: &Path) -> Result<()> {
         .open(failed_file)?;
     writeln!(file, "{url}")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn write_temp(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "{content}").unwrap();
+        f
+    }
+
+    #[test]
+    fn parses_valid_urls() {
+        let f = write_temp("https://example.com/1\nhttps://example.com/2\n");
+        let LoadedUrls::Found(urls) = load_urls_from_file(f.path()).unwrap() else {
+            panic!("expected Found");
+        };
+        assert_eq!(urls, ["https://example.com/1", "https://example.com/2"]);
+    }
+
+    #[test]
+    fn skips_blank_lines_and_comments() {
+        let f =
+            write_temp("# comment\n\nhttps://example.com/1\n  \n# another\nhttps://example.com/2");
+        let LoadedUrls::Found(urls) = load_urls_from_file(f.path()).unwrap() else {
+            panic!("expected Found");
+        };
+        assert_eq!(urls, ["https://example.com/1", "https://example.com/2"]);
+    }
+
+    #[test]
+    fn trims_whitespace() {
+        let f = write_temp("  https://example.com/1  \n");
+        let LoadedUrls::Found(urls) = load_urls_from_file(f.path()).unwrap() else {
+            panic!("expected Found");
+        };
+        assert_eq!(urls[0], "https://example.com/1");
+    }
+
+    #[test]
+    fn returns_empty_for_blank_file() {
+        let f = write_temp("# just a comment\n\n   \n");
+        assert!(matches!(
+            load_urls_from_file(f.path()).unwrap(),
+            LoadedUrls::Empty
+        ));
+    }
+
+    #[test]
+    fn returns_error_for_missing_file() {
+        let result = load_urls_from_file(Path::new("/nonexistent/path.txt"));
+        assert!(result.is_err());
+    }
 }
