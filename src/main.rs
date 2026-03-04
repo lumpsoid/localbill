@@ -4,6 +4,7 @@ mod config;
 mod error;
 mod invoice;
 mod net;
+mod sanitize;
 
 use clap::Parser;
 use cli::{Cli, Command};

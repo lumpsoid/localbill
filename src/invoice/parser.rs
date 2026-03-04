@@ -2,6 +2,7 @@ use scraper::{Html, Selector};
 
 use crate::error::{Error, Result};
 use crate::invoice::{Invoice, InvoiceItem};
+use crate::sanitize::cyrillic_to_latin;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
@@ -52,7 +53,7 @@ fn try_parse(url: &str, agent: &ureq::Agent) -> Result<Invoice> {
     let doc = Html::parse_document(&body);
 
     let invoice_number = sel_text(&doc, "#invoiceNumberLabel")?;
-    let retailer = sel_text(&doc, "#shopFullNameLabel")?;
+    let retailer = cyrillic_to_latin(&sel_text(&doc, "#shopFullNameLabel")?);
     let date_raw = sel_text(&doc, "#sdcDateTimeLabel")?;
     let price_raw = sel_text(&doc, "#totalAmountLabel")?;
     // The receipt pre-block lives inside a Bootstrap collapse panel.
@@ -149,7 +150,7 @@ fn fetch_items(
 }
 
 fn string_field(v: &serde_json::Value, key: &str) -> String {
-    v[key].as_str().unwrap_or("").to_string()
+    cyrillic_to_latin(v[key].as_str().unwrap_or(""))
 }
 
 fn float_field(v: &serde_json::Value, key: &str) -> f64 {
