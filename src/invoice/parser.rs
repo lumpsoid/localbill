@@ -175,7 +175,15 @@ fn parse_date(s: &str) -> Result<String> {
         )));
     }
     let (dd, mm, yyyy) = (segments[0], segments[1], segments[2]);
-    Ok(format!("{yyyy}-{mm}-{dd}T{time_part}"))
+
+    let dd: u32 = dd
+        .parse()
+        .map_err(|_| Error::Parse(format!("invalid day: '{dd}'")))?;
+    let mm: u32 = mm
+        .parse()
+        .map_err(|_| Error::Parse(format!("invalid month: '{mm}'")))?;
+
+    Ok(format!("{yyyy}-{mm:02}-{dd:02}T{time_part}"))
 }
 
 /// Parse a European-formatted number: `"1.234,56"` → `1234.56`.
@@ -205,11 +213,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn date_conversion() {
+    fn test_standard_date() {
         assert_eq!(
             parse_date("15.03.2024. 14:30:00").unwrap(),
             "2024-03-15T14:30:00"
         );
+    }
+
+    #[test]
+    fn test_single_digit_day_and_month() {
+        assert_eq!(
+            parse_date("5.3.2024. 09:00:00").unwrap(),
+            "2024-03-05T09:00:00"
+        );
+    }
+
+    #[test]
+    fn test_single_digit_day_only() {
+        assert_eq!(
+            parse_date("7.11.2024. 23:59:59").unwrap(),
+            "2024-11-07T23:59:59"
+        );
+    }
+
+    #[test]
+    fn test_single_digit_month_only() {
+        assert_eq!(
+            parse_date("25.1.2024. 00:00:00").unwrap(),
+            "2024-01-25T00:00:00"
+        );
+    }
+
+    #[test]
+    fn test_with_leading_whitespace() {
+        assert_eq!(
+            parse_date("  01.01.2024. 12:00:00").unwrap(),
+            "2024-01-01T12:00:00"
+        );
+    }
+
+    #[test]
+    fn test_with_trailing_whitespace() {
+        assert_eq!(
+            parse_date("01.01.2024. 12:00:00  ").unwrap(),
+            "2024-01-01T12:00:00"
+        );
+    }
+
+    #[test]
+    fn test_err_no_space() {
+        assert!(parse_date("15.03.2024.14:30:00").is_err());
+    }
+
+    #[test]
+    fn test_err_missing_date_segment() {
+        assert!(parse_date("15.03. 14:30:00").is_err());
+    }
+
+    #[test]
+    fn test_err_non_numeric_day() {
+        assert!(parse_date("XX.03.2024. 14:30:00").is_err());
+    }
+
+    #[test]
+    fn test_err_non_numeric_month() {
+        assert!(parse_date("15.XX.2024. 14:30:00").is_err());
+    }
+
+    #[test]
+    fn test_err_empty_string() {
+        assert!(parse_date("").is_err());
     }
 
     #[test]
