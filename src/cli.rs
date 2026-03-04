@@ -9,7 +9,7 @@ use std::path::PathBuf;
     propagate_version = true
 )]
 pub struct Cli {
-    /// Override the config file path (default: $XDG_CONFIG_HOME/localbills/config)
+    /// Override the config file path (default: $XDG_CONFIG_HOME/localbills/config.yaml)
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
