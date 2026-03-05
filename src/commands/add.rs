@@ -44,8 +44,7 @@ pub fn run(args: AddArgs, config: &Config) -> Result<()> {
     let slug = mapper::slugify(name_str);
     let base = format!("{date_prefix}-{slug}");
 
-    let yaml_str = serde_yaml::to_string(&data)?;
-    let markdown = format!("---\n{yaml_str}---\n");
+    let markdown = render_markdown(&data)?;
 
     if args.dry_run {
         eprintln!("\n# filename: {base}.md");
@@ -70,6 +69,133 @@ pub fn run(args: AddArgs, config: &Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+// ── Pure helpers ──────────────────────────────────────────────────────────────
+
+/// Render collected field data as a Markdown file with YAML front-matter.
+pub(crate) fn render_markdown(data: &serde_yaml::Mapping) -> Result<String> {
+    let yaml_str = serde_yaml::to_string(data)?;
+    Ok(format!("---\n{yaml_str}---\n"))
+}
+
+/// Build the inline hint string shown next to a field prompt.
+///
+/// Returns an empty string when there is nothing to show.
+pub(crate) fn build_hint(
+    format: Option<&str>,
+    pattern: Option<&str>,
+    minimum: Option<f64>,
+    maximum: Option<f64>,
+    enum_vals: Option<&[&str]>,
+    required: bool,
+) -> String {
+    let mut hints: Vec<String> = Vec::new();
+    if let Some(fmt) = format {
+        hints.push(format!("format: {fmt}"));
+    }
+    if let Some(pat) = pattern {
+        hints.push(format!("pattern: {pat}"));
+    }
+    if let Some(min) = minimum {
+        hints.push(format!("min: {min}"));
+    }
+    if let Some(max) = maximum {
+        hints.push(format!("max: {max}"));
+    }
+    if let Some(vals) = enum_vals {
+        hints.push(format!("one of: {}", vals.join(" | ")));
+    }
+    if !required {
+        hints.push("optional".to_string());
+    }
+    if hints.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", hints.join(", "))
+    }
+}
+
+/// Parse and range-check a number input string.
+///
+/// Returns the parsed `f64` on success, or a user-facing error message on failure.
+pub(crate) fn validate_number_input(
+    input: &str,
+    minimum: Option<f64>,
+    maximum: Option<f64>,
+) -> std::result::Result<f64, String> {
+    let n: f64 = input
+        .parse()
+        .map_err(|_| "Please enter a valid number.".to_string())?;
+    if let Some(min) = minimum {
+        if n < min {
+            return Err(format!("Value must be >= {min}"));
+        }
+    }
+    if let Some(max) = maximum {
+        if n > max {
+            return Err(format!("Value must be <= {max}"));
+        }
+    }
+    Ok(n)
+}
+
+/// Validate a string input against schema constraints.
+///
+/// Returns:
+/// - `Ok(None)` — input is valid.
+/// - `Ok(Some(message))` — input is invalid; show the message and re-prompt.
+/// - `Err(e)` — the schema itself is broken (e.g. invalid regex); propagate.
+pub(crate) fn validate_string_input(
+    input: &str,
+    min_length: Option<u64>,
+    pattern: Option<&str>,
+    enum_vals: Option<&[&str]>,
+    format: Option<&str>,
+) -> Result<Option<String>> {
+    if let Some(min_len) = min_length {
+        if input.len() < min_len as usize {
+            return Ok(Some(format!("Must be at least {min_len} character(s).")));
+        }
+    }
+    if let Some(pat) = pattern {
+        match validate_pattern(input, pat) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(Some(format!("Does not match required pattern: {pat}")));
+            }
+            Err(e) => {
+                return Err(Error::Parse(format!("Invalid schema pattern '{pat}': {e}")));
+            }
+        }
+    }
+    if let Some(vals) = enum_vals {
+        if !vals.contains(&input) {
+            return Ok(Some(format!("Must be one of: {}", vals.join(", "))));
+        }
+    }
+    if format == Some("datetime") && !looks_like_datetime(input) {
+        return Ok(Some(
+            "Expected datetime format: YYYY-MM-DDTHH:MM:SS".to_string(),
+        ));
+    }
+    Ok(None)
+}
+
+/// Compile `pattern` as a regex and test it against `input`.
+///
+/// Returns `Err` if the pattern itself is invalid (schema bug).
+pub(crate) fn validate_pattern(
+    input: &str,
+    pattern: &str,
+) -> std::result::Result<bool, regex::Error> {
+    let re = regex::Regex::new(pattern)?;
+    Ok(re.is_match(input))
+}
+
+/// Minimal datetime check: at least 19 chars with `T` at position 10.
+pub(crate) fn looks_like_datetime(s: &str) -> bool {
+    s.len() >= 19 && s.as_bytes().get(10) == Some(&b'T')
 }
 
 // ── Schema-driven prompt loop ─────────────────────────────────────────────────
@@ -133,7 +259,7 @@ fn prompt_from_schema(schema: &Value) -> Result<serde_yaml::Mapping> {
     Ok(data)
 }
 
-// ── Field-level prompts ───────────────────────────────────────────────────────
+// ── Field-level prompts (I/O shells around pure validators) ───────────────────
 
 fn read_input(prompt: &str) -> io::Result<String> {
     print!("{prompt}");
@@ -160,31 +286,14 @@ fn prompt_scalar_field(name: &str, prop: &Value, required: bool) -> Result<Optio
         .and_then(|v| v.as_sequence())
         .map(|s| s.iter().filter_map(|v| v.as_str()).collect());
 
-    // Assemble a compact hint shown alongside the field name.
-    let mut hints: Vec<String> = Vec::new();
-    if let Some(fmt) = format {
-        hints.push(format!("format: {fmt}"));
-    }
-    if let Some(pat) = pattern {
-        hints.push(format!("pattern: {pat}"));
-    }
-    if let Some(min) = minimum {
-        hints.push(format!("min: {min}"));
-    }
-    if let Some(max) = maximum {
-        hints.push(format!("max: {max}"));
-    }
-    if let Some(vals) = &enum_vals {
-        hints.push(format!("one of: {}", vals.join(" | ")));
-    }
-    if !required {
-        hints.push("optional".to_string());
-    }
-    let hint_str = if hints.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", hints.join(", "))
-    };
+    let hint_str = build_hint(
+        format,
+        pattern,
+        minimum,
+        maximum,
+        enum_vals.as_deref(),
+        required,
+    );
 
     loop {
         let input = read_input(&format!("{name}{hint_str}: ")).map_err(Error::Io)?;
@@ -199,60 +308,21 @@ fn prompt_scalar_field(name: &str, prop: &Value, required: bool) -> Result<Optio
         }
 
         match field_type {
-            "number" => match input.parse::<f64>() {
-                Ok(n) => {
-                    if let Some(min) = minimum {
-                        if n < min {
-                            eprintln!("  Value must be >= {min}");
-                            continue;
-                        }
-                    }
-                    if let Some(max) = maximum {
-                        if n > max {
-                            eprintln!("  Value must be <= {max}");
-                            continue;
-                        }
-                    }
-                    return Ok(Some(Value::Number(serde_yaml::Number::from(n))));
-                }
-                Err(_) => {
-                    eprintln!("  Please enter a valid number.");
+            "number" => match validate_number_input(&input, minimum, maximum) {
+                Ok(n) => return Ok(Some(Value::Number(serde_yaml::Number::from(n)))),
+                Err(msg) => {
+                    eprintln!("  {msg}");
                     continue;
                 }
             },
             _ => {
-                // string (and any other type treated as string)
-                if let Some(min_len) = min_length {
-                    if input.len() < min_len as usize {
-                        eprintln!("  Must be at least {min_len} character(s).");
+                match validate_string_input(&input, min_length, pattern, enum_vals.as_deref(), format)? {
+                    Some(msg) => {
+                        eprintln!("  {msg}");
                         continue;
                     }
+                    None => return Ok(Some(Value::String(input))),
                 }
-                if let Some(pat) = pattern {
-                    match validate_pattern(&input, pat) {
-                        Ok(false) => {
-                            eprintln!("  Does not match required pattern: {pat}");
-                            continue;
-                        }
-                        Err(e) => {
-                            return Err(Error::Parse(format!(
-                                "Invalid schema pattern '{pat}': {e}"
-                            )));
-                        }
-                        Ok(true) => {}
-                    }
-                }
-                if let Some(vals) = &enum_vals {
-                    if !vals.contains(&input.as_str()) {
-                        eprintln!("  Must be one of: {}", vals.join(", "));
-                        continue;
-                    }
-                }
-                if format == Some("datetime") && !looks_like_datetime(&input) {
-                    eprintln!("  Expected datetime format: YYYY-MM-DDTHH:MM:SS");
-                    continue;
-                }
-                return Ok(Some(Value::String(input)));
             }
         }
     }
@@ -312,16 +382,250 @@ fn prompt_object_array(
     Ok(items)
 }
 
-// ── Validators ────────────────────────────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// Compile `pattern` as a regex and test it against `input`.
-/// Returns `Err` if the pattern itself is invalid (schema bug).
-fn validate_pattern(input: &str, pattern: &str) -> std::result::Result<bool, regex::Error> {
-    let re = regex::Regex::new(pattern)?;
-    Ok(re.is_match(input))
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Minimal datetime check: at least 19 chars with `T` at position 10.
-fn looks_like_datetime(s: &str) -> bool {
-    s.len() >= 19 && s.as_bytes().get(10) == Some(&b'T')
+    // ── looks_like_datetime ───────────────────────────────────────────────────
+
+    #[test]
+    fn datetime_valid() {
+        assert!(looks_like_datetime("2024-03-15T14:30:00"));
+    }
+
+    #[test]
+    fn datetime_with_fractional_seconds() {
+        assert!(looks_like_datetime("2024-03-15T14:30:00.123"));
+    }
+
+    #[test]
+    fn datetime_too_short() {
+        assert!(!looks_like_datetime("2024-03-15"));
+    }
+
+    #[test]
+    fn datetime_wrong_separator() {
+        assert!(!looks_like_datetime("2024-03-15 14:30:00"));
+    }
+
+    // ── validate_pattern ─────────────────────────────────────────────────────
+
+    #[test]
+    fn pattern_currency_valid() {
+        assert_eq!(validate_pattern("USD", "^[A-Z]{3}$").unwrap(), true);
+        assert_eq!(validate_pattern("RSD", "^[A-Z]{3}$").unwrap(), true);
+    }
+
+    #[test]
+    fn pattern_currency_lowercase_rejected() {
+        assert_eq!(validate_pattern("usd", "^[A-Z]{3}$").unwrap(), false);
+    }
+
+    #[test]
+    fn pattern_currency_wrong_length() {
+        assert_eq!(validate_pattern("US", "^[A-Z]{3}$").unwrap(), false);
+        assert_eq!(validate_pattern("USDD", "^[A-Z]{3}$").unwrap(), false);
+    }
+
+    #[test]
+    fn pattern_invalid_regex_returns_err() {
+        assert!(validate_pattern("x", "[invalid").is_err());
+    }
+
+    // ── build_hint ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn hint_empty_when_no_constraints_and_required() {
+        assert_eq!(build_hint(None, None, None, None, None, true), "");
+    }
+
+    #[test]
+    fn hint_optional_when_not_required() {
+        assert_eq!(
+            build_hint(None, None, None, None, None, false),
+            " (optional)"
+        );
+    }
+
+    #[test]
+    fn hint_includes_format() {
+        assert_eq!(
+            build_hint(Some("datetime"), None, None, None, None, true),
+            " (format: datetime)"
+        );
+    }
+
+    #[test]
+    fn hint_includes_pattern() {
+        assert_eq!(
+            build_hint(None, Some("^[A-Z]{3}$"), None, None, None, true),
+            " (pattern: ^[A-Z]{3}$)"
+        );
+    }
+
+    #[test]
+    fn hint_includes_min_max() {
+        assert_eq!(
+            build_hint(None, None, Some(0.0), Some(100.0), None, true),
+            " (min: 0, max: 100)"
+        );
+    }
+
+    #[test]
+    fn hint_includes_enum() {
+        assert_eq!(
+            build_hint(None, None, None, None, Some(&["percentage", "fixed"]), true),
+            " (one of: percentage | fixed)"
+        );
+    }
+
+    #[test]
+    fn hint_combines_all() {
+        let h = build_hint(
+            Some("uri"),
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        assert_eq!(h, " (format: uri, optional)");
+    }
+
+    // ── validate_number_input ─────────────────────────────────────────────────
+
+    #[test]
+    fn number_valid_no_constraints() {
+        assert_eq!(validate_number_input("3.14", None, None).unwrap(), 3.14);
+    }
+
+    #[test]
+    fn number_integer_string() {
+        assert_eq!(validate_number_input("5", None, None).unwrap(), 5.0);
+    }
+
+    #[test]
+    fn number_not_a_number() {
+        assert!(validate_number_input("abc", None, None).is_err());
+    }
+
+    #[test]
+    fn number_below_minimum() {
+        assert!(validate_number_input("-1", Some(0.0), None).is_err());
+    }
+
+    #[test]
+    fn number_at_minimum() {
+        assert_eq!(validate_number_input("0", Some(0.0), None).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn number_above_maximum() {
+        assert!(validate_number_input("101", None, Some(100.0)).is_err());
+    }
+
+    #[test]
+    fn number_at_maximum() {
+        assert_eq!(
+            validate_number_input("100", None, Some(100.0)).unwrap(),
+            100.0
+        );
+    }
+
+    // ── validate_string_input ─────────────────────────────────────────────────
+
+    #[test]
+    fn string_valid_no_constraints() {
+        assert!(validate_string_input("hello", None, None, None, None)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn string_too_short() {
+        let msg = validate_string_input("x", Some(3), None, None, None)
+            .unwrap()
+            .unwrap();
+        assert!(msg.contains("3"));
+    }
+
+    #[test]
+    fn string_meets_min_length() {
+        assert!(validate_string_input("abc", Some(3), None, None, None)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn string_pattern_match() {
+        assert!(
+            validate_string_input("USD", None, Some("^[A-Z]{3}$"), None, None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn string_pattern_no_match() {
+        let msg = validate_string_input("usd", None, Some("^[A-Z]{3}$"), None, None)
+            .unwrap()
+            .unwrap();
+        assert!(msg.contains("pattern"));
+    }
+
+    #[test]
+    fn string_invalid_pattern_returns_err() {
+        assert!(validate_string_input("x", None, Some("[bad"), None, None).is_err());
+    }
+
+    #[test]
+    fn string_enum_valid() {
+        assert!(
+            validate_string_input("fixed", None, None, Some(&["percentage", "fixed"]), None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn string_enum_invalid() {
+        let msg = validate_string_input("other", None, None, Some(&["percentage", "fixed"]), None)
+            .unwrap()
+            .unwrap();
+        assert!(msg.contains("percentage"));
+    }
+
+    #[test]
+    fn string_datetime_valid() {
+        assert!(
+            validate_string_input("2024-03-15T14:30:00", None, None, None, Some("datetime"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn string_datetime_invalid() {
+        let msg = validate_string_input("2024-03-15", None, None, None, Some("datetime"))
+            .unwrap()
+            .unwrap();
+        assert!(msg.contains("datetime"));
+    }
+
+    // ── render_markdown ───────────────────────────────────────────────────────
+
+    #[test]
+    fn render_markdown_wraps_yaml_in_front_matter() {
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(
+            Value::String("name".into()),
+            Value::String("Test Item".into()),
+        );
+        let md = render_markdown(&map).unwrap();
+        assert!(md.starts_with("---\n"));
+        assert!(md.ends_with("---\n"));
+        assert!(md.contains("name: Test Item"));
+    }
 }
