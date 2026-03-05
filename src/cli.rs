@@ -19,6 +19,9 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Interactively create a new invoice entry from the configured schema
+    Add(AddArgs),
+
     /// Parse an invoice URL and save it to the transaction directory
     Insert(InsertArgs),
 
@@ -36,6 +39,19 @@ pub enum Command {
 
     /// Commit and sync the data directory with its git remote
     Sync(SyncArgs),
+}
+
+// ── add ───────────────────────────────────────────────────────────────────────
+
+#[derive(Args)]
+pub struct AddArgs {
+    /// Print the generated file to stdout; do not write to disk
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Skip git sync after writing the file
+    #[arg(long)]
+    pub no_sync: bool,
 }
 
 // ── insert ───────────────────────────────────────────────────────────────────
