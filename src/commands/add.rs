@@ -229,9 +229,17 @@ fn prompt_scalar_field(name: &str, prop: &Value, required: bool) -> Result<Optio
                     }
                 }
                 if let Some(pat) = pattern {
-                    if !validate_pattern(&input, pat) {
-                        eprintln!("  Does not match required pattern: {pat}");
-                        continue;
+                    match validate_pattern(&input, pat) {
+                        Ok(false) => {
+                            eprintln!("  Does not match required pattern: {pat}");
+                            continue;
+                        }
+                        Err(e) => {
+                            return Err(Error::Parse(format!(
+                                "Invalid schema pattern '{pat}': {e}"
+                            )));
+                        }
+                        Ok(true) => {}
                     }
                 }
                 if let Some(vals) = &enum_vals {
@@ -304,14 +312,13 @@ fn prompt_object_array(
     Ok(items)
 }
 
-// ── Lightweight validators (no external regex crate) ─────────────────────────
+// ── Validators ────────────────────────────────────────────────────────────────
 
-/// Check `input` against the small set of patterns used in the schema.
-fn validate_pattern(input: &str, pattern: &str) -> bool {
-    match pattern {
-        "^[A-Z]{3}$" => input.len() == 3 && input.chars().all(|c| c.is_ascii_uppercase()),
-        _ => true, // unknown patterns are accepted
-    }
+/// Compile `pattern` as a regex and test it against `input`.
+/// Returns `Err` if the pattern itself is invalid (schema bug).
+fn validate_pattern(input: &str, pattern: &str) -> std::result::Result<bool, regex::Error> {
+    let re = regex::Regex::new(pattern)?;
+    Ok(re.is_match(input))
 }
 
 /// Minimal datetime check: at least 19 chars with `T` at position 10.

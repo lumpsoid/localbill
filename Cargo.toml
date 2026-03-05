@@ -23,6 +23,7 @@ ureq = { version = "3.2.0", features = ["json"] }
 # HTML parsing for Serbian fiscal invoice pages
 scraper = "0.20"
 jsonschema = { version = "0.44.1", default-features = false }
+regex = { version = "1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3.26.0"
