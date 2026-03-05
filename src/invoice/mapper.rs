@@ -117,7 +117,7 @@ fn yaml_escape(s: &str) -> String {
 
 /// Return a path in `dir` whose filename `{base}.{ext}` does not yet exist.
 /// Appends `-01`, `-02`, … until a free slot is found.
-fn unique_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
+pub fn unique_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
     let candidate = dir.join(format!("{base}.{ext}"));
     if !candidate.exists() {
         return candidate;

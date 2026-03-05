@@ -23,6 +23,7 @@ fn run(cli: Cli) -> Result<()> {
     let config = config::load(cli.config.as_deref())?;
 
     match cli.command {
+        Command::Add(args) => commands::add::run(args, &config),
         Command::Insert(args) => commands::insert::run(args, &config),
         Command::Queue(args) => commands::queue::run(args, &config),
         Command::Validate(args) => commands::validate::run(args, &config),
