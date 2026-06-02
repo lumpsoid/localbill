@@ -4,6 +4,7 @@
 use crate::adapters::clock::DateClock;
 use crate::adapters::http::UreqHttp;
 use crate::adapters::network::StdNetwork;
+use crate::adapters::progress::SpinnerProgress;
 use crate::adapters::prompt::StdinPrompt;
 use crate::adapters::remote_queue::HttpRemoteQueue;
 use crate::adapters::reporter::StdReporter;
@@ -19,6 +20,7 @@ pub struct ProdPlatform {
     clock: DateClock,
     prompt: StdinPrompt,
     reporter: StdReporter,
+    progress: SpinnerProgress,
     transactions: FsTransactionStore,
     queue: FsQueueStore,
     remote_queue: HttpRemoteQueue,
@@ -35,6 +37,7 @@ impl ProdPlatform {
             clock: DateClock,
             prompt: StdinPrompt,
             reporter: StdReporter,
+            progress: SpinnerProgress,
             transactions: FsTransactionStore::new(cfg.transaction_dir.clone()),
             queue: FsQueueStore::new(cfg.queue_file.clone()),
             remote_queue: HttpRemoteQueue::new(cfg.api_base_url()),
@@ -52,6 +55,7 @@ impl Platform for ProdPlatform {
     type Clock = DateClock;
     type Prompt = StdinPrompt;
     type Reporter = StdReporter;
+    type Progress = SpinnerProgress;
     type Transactions = FsTransactionStore;
     type Queue = FsQueueStore;
     type RemoteQueue = HttpRemoteQueue;
@@ -78,6 +82,9 @@ impl Platform for ProdPlatform {
     }
     fn reporter(&self) -> &Self::Reporter {
         &self.reporter
+    }
+    fn progress(&self) -> &Self::Progress {
+        &self.progress
     }
     fn transactions(&self) -> &Self::Transactions {
         &self.transactions

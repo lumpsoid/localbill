@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::ports::{
-    Clock, Env, FailedLog, Http, Network, Platform, Prompt, QueueStore, RemoteQueue,
-    RemoteReachable, Reporter, SchemaSource, StoredDoc, TransactionStore, Vcs,
+    Clock, Env, FailedLog, Http, Network, Platform, Progress, ProgressTask, Prompt, QueueStore,
+    RemoteQueue, RemoteReachable, Reporter, SchemaSource, StoredDoc, TransactionStore, Vcs,
 };
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
@@ -142,6 +142,33 @@ impl Reporter for RecordingReporter {
     fn status(&self, msg: &str) {
         self.status.borrow_mut().push(msg.to_string());
     }
+}
+
+/// Records the phase lists handed to `start`; the task itself is a no-op (no
+/// thread, no terminal writes).
+#[derive(Default)]
+pub struct RecordingProgress {
+    pub started: RefCell<Vec<Vec<String>>>,
+}
+impl RecordingProgress {
+    /// The phases of the most recent `start` (empty if none).
+    pub fn last_phases(&self) -> Vec<String> {
+        self.started.borrow().last().cloned().unwrap_or_default()
+    }
+}
+impl Progress for RecordingProgress {
+    type Task = NoopTask;
+    fn start(&self, phases: &[&str]) -> NoopTask {
+        self.started
+            .borrow_mut()
+            .push(phases.iter().map(|s| s.to_string()).collect());
+        NoopTask
+    }
+}
+pub struct NoopTask;
+impl ProgressTask for NoopTask {
+    fn complete(&self) {}
+    fn finish(self) {}
 }
 
 #[derive(Default)]
@@ -282,6 +309,7 @@ pub struct TestPlatform {
     pub clock: FixedClock,
     pub prompt: ScriptedPrompt,
     pub reporter: RecordingReporter,
+    pub progress: RecordingProgress,
     pub transactions: MemTransactions,
     pub queue: MemQueue,
     pub remote_queue: FakeRemoteQueue,
@@ -299,6 +327,7 @@ impl Default for TestPlatform {
             clock: FixedClock,
             prompt: ScriptedPrompt::default(),
             reporter: RecordingReporter::default(),
+            progress: RecordingProgress::default(),
             transactions: MemTransactions::default(),
             queue: MemQueue::default(),
             remote_queue: FakeRemoteQueue::default(),
@@ -316,6 +345,7 @@ impl Platform for TestPlatform {
     type Clock = FixedClock;
     type Prompt = ScriptedPrompt;
     type Reporter = RecordingReporter;
+    type Progress = RecordingProgress;
     type Transactions = MemTransactions;
     type Queue = MemQueue;
     type RemoteQueue = FakeRemoteQueue;
@@ -342,6 +372,9 @@ impl Platform for TestPlatform {
     }
     fn reporter(&self) -> &Self::Reporter {
         &self.reporter
+    }
+    fn progress(&self) -> &Self::Progress {
+        &self.progress
     }
     fn transactions(&self) -> &Self::Transactions {
         &self.transactions
@@ -448,8 +481,8 @@ mod tests {
             vec![items_json()],
         );
         // Zero retry delay keeps the test instant (prod uses 1s).
-        let inv = parser::parse_with_retries("http://x", &http, 3, std::time::Duration::ZERO)
-            .unwrap();
+        let inv =
+            parser::parse_with_retries("http://x", &http, 3, std::time::Duration::ZERO).unwrap();
         assert_eq!(inv.items.len(), 1);
     }
 
@@ -470,11 +503,11 @@ mod tests {
         };
         let cfg = test_config();
 
-        insert::run_one("http://x/1", &insert_args(), &cfg, &tp).unwrap();
+        let outcome = insert::run_one("http://x/1", &insert_args(), &cfg, &tp).unwrap();
 
+        assert!(matches!(outcome, insert::Outcome::Queued { .. }));
         assert_eq!(tp.queue.urls.borrow().as_slice(), ["http://x/1"]);
         assert!(tp.transactions.docs.borrow().is_empty());
-        assert!(tp.reporter.status_contains("queuing URL"));
     }
 
     #[test]
@@ -488,11 +521,11 @@ mod tests {
         };
         let cfg = test_config();
 
-        insert::run_one("http://x/1", &insert_args(), &cfg, &tp).unwrap();
+        let outcome = insert::run_one("http://x/1", &insert_args(), &cfg, &tp).unwrap();
 
         // No new doc written.
+        assert!(matches!(outcome, insert::Outcome::Skipped { .. }));
         assert_eq!(tp.transactions.docs.borrow().len(), 1);
-        assert!(tp.reporter.status_contains("Skipped"));
     }
 
     #[test]
@@ -503,12 +536,17 @@ mod tests {
         };
         let cfg = test_config();
 
-        insert::run_one("http://x/1", &insert_args(), &cfg, &tp).unwrap();
+        let outcome = insert::run_one("http://x/1", &insert_args(), &cfg, &tp).unwrap();
 
+        assert!(matches!(outcome, insert::Outcome::Saved { files: 1, .. }));
         let docs = tp.transactions.docs.borrow();
         assert_eq!(docs.len(), 1);
         assert!(docs[0].content.contains("name: \"Mleko\""));
-        assert!(tp.reporter.out_contains("Saved:"));
+        // no_sync=true, so the checklist covered parse + save only.
+        assert_eq!(
+            tp.progress.last_phases(),
+            ["Parse invoice", "Save line items"]
+        );
     }
 
     #[test]

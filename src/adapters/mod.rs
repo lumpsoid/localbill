@@ -7,6 +7,7 @@ pub mod env;
 pub mod http;
 pub mod network;
 pub mod prod;
+pub mod progress;
 pub mod prompt;
 pub mod remote_queue;
 pub mod reporter;

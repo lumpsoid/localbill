@@ -7,12 +7,9 @@ use crate::ports::{Reporter, TransactionStore};
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Write one Markdown file per item from `invoice` into the transaction store.
-/// Returns the list of paths that were created.
-pub fn write_invoice(
-    invoice: &Invoice,
-    store: &impl TransactionStore,
-    reporter: &impl Reporter,
-) -> Result<Vec<PathBuf>> {
+/// Returns the list of paths that were created. Output is left to the caller
+/// (the `insert` report) so the live progress display stays uncorrupted.
+pub fn write_invoice(invoice: &Invoice, store: &impl TransactionStore) -> Result<Vec<PathBuf>> {
     let date_prefix = compact_date(&invoice.date);
     let mut written = Vec::with_capacity(invoice.items.len());
 
@@ -27,7 +24,6 @@ pub fn write_invoice(
             item.total,
         );
         let path = store.write_new(&filename, &content)?;
-        reporter.out(&format!("Saved: {}", path.display()));
         written.push(path);
     }
 

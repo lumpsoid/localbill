@@ -11,6 +11,7 @@ pub fn run<P: Platform>(args: SyncArgs, config: &Config, p: &P) -> Result<()> {
         None,
         args.message.as_deref(),
         !args.no_push,
+        false,
         p,
     )
 }
@@ -21,11 +22,14 @@ pub fn run<P: Platform>(args: SyncArgs, config: &Config, p: &P) -> Result<()> {
 ///   (pass `Some("Offline")` from internal callers, `None` to auto-detect).
 /// * `user_message` – optional suffix supplied by the user.
 /// * `push` – whether to push after committing.
+/// * `quiet` – suppress progress/result lines (used when `insert` drives its
+///   own live progress display, which line output would corrupt).
 pub fn commit_and_push<P: Platform>(
     data_dir: &Path,
     offline_prefix: Option<&str>,
     user_message: Option<&str>,
     push: bool,
+    quiet: bool,
     p: &P,
 ) -> Result<()> {
     let vcs = p.vcs();
@@ -43,7 +47,9 @@ pub fn commit_and_push<P: Platform>(
         // Caller already determined connectivity (offline path from insert).
         false
     } else if p.network().has_internet() {
-        reporter.status("Internet detected, checking git remote…");
+        if !quiet {
+            reporter.status("Internet detected, checking git remote…");
+        }
         p.remote().reachable(data_dir)
     } else {
         false
@@ -56,10 +62,12 @@ pub fn commit_and_push<P: Platform>(
 
     // ── Check for changes ─────────────────────────────────────────────────────
     if !vcs.is_dirty(data_dir)? {
-        reporter.out(&format!(
-            "No changes in {}. Nothing to commit.",
-            data_dir.display()
-        ));
+        if !quiet {
+            reporter.out(&format!(
+                "No changes in {}. Nothing to commit.",
+                data_dir.display()
+            ));
+        }
         return Ok(());
     }
 
@@ -73,11 +81,13 @@ pub fn commit_and_push<P: Platform>(
 
     // ── Commit ────────────────────────────────────────────────────────────────
     vcs.commit_all(data_dir, &commit_msg)?;
-    reporter.out(&format!("Committed: {commit_msg}"));
+    if !quiet {
+        reporter.out(&format!("Committed: {commit_msg}"));
+    }
 
     // ── Push ──────────────────────────────────────────────────────────────────
     if !push || !online {
-        if !online {
+        if !online && !quiet {
             reporter.status("Offline: changes committed locally but not pushed.");
         }
         return Ok(());
@@ -85,7 +95,9 @@ pub fn commit_and_push<P: Platform>(
 
     let branch = vcs.current_branch(data_dir)?;
     vcs.push(data_dir, &branch)?;
-    reporter.out(&format!("Pushed to origin/{branch}."));
+    if !quiet {
+        reporter.out(&format!("Pushed to origin/{branch}."));
+    }
 
     Ok(())
 }

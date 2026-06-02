@@ -75,6 +75,28 @@ pub trait Reporter {
     fn status(&self, msg: &str);
 }
 
+/// A live, multi-line phase checklist with one animated ("spinning") phase.
+///
+/// Pure terminal eye-candy: the production adapter draws a fidget-spinner and
+/// redraws the block in place; when output is not a TTY it returns a no-op task
+/// so piped/redirected output stays clean. All real results still flow through
+/// [`Reporter`] — a `Progress` block is transient and erased on `finish`.
+pub trait Progress {
+    type Task: ProgressTask;
+    /// Render `phases` as a checklist (the first phase starts active) and begin
+    /// animating. The returned handle drives it; dropping or `finish`ing the
+    /// handle stops the animation and erases the block.
+    fn start(&self, phases: &[&str]) -> Self::Task;
+}
+
+/// Handle to an in-progress [`Progress`] checklist.
+pub trait ProgressTask {
+    /// Mark the active phase done (✓) and advance to the next one.
+    fn complete(&self);
+    /// Stop the animation and erase the checklist block.
+    fn finish(self);
+}
+
 /// Process environment lookup (used by config loading).
 pub trait Env {
     fn var(&self, key: &str) -> Option<String>;
@@ -137,6 +159,7 @@ pub trait Platform {
     type Clock: Clock;
     type Prompt: Prompt;
     type Reporter: Reporter;
+    type Progress: Progress;
     type Transactions: TransactionStore;
     type Queue: QueueStore;
     type RemoteQueue: RemoteQueue;
@@ -150,6 +173,7 @@ pub trait Platform {
     fn clock(&self) -> &Self::Clock;
     fn prompt(&self) -> &Self::Prompt;
     fn reporter(&self) -> &Self::Reporter;
+    fn progress(&self) -> &Self::Progress;
     fn transactions(&self) -> &Self::Transactions;
     fn queue(&self) -> &Self::Queue;
     fn remote_queue(&self) -> &Self::RemoteQueue;

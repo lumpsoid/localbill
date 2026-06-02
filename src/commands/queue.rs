@@ -142,9 +142,13 @@ fn process_urls<P: Platform>(
             force: false,
         };
         match crate::commands::insert::run_one(url, &args, config, p) {
-            Ok(()) => {
+            Ok(outcome) if !outcome.is_failure() => {
                 reporter.status("ok");
                 succeeded.push(url.clone());
+            }
+            Ok(_) => {
+                reporter.status("FAILED");
+                failed.push(url.clone());
             }
             Err(e) => {
                 reporter.status(&format!("FAILED: {e}"));
