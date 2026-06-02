@@ -5,40 +5,31 @@
 //! optional fields accept an empty line to skip.  The collected values are written
 //! as a Markdown file with YAML front-matter into `transaction_dir`.
 
-use std::io::{self, Write};
-
 use serde_yaml::Value;
 
-use crate::cli::AddArgs;
+use crate::cli::{AddArgs, SyncArgs};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::invoice::mapper;
+use crate::ports::{Platform, Prompt, Reporter, SchemaSource, TransactionStore};
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run(args: AddArgs, config: &Config) -> Result<()> {
-    let schema_path = config.schema_file.as_ref().ok_or_else(|| {
-        Error::Config(
-            "schema_file is not configured; set schema_file in config.yaml".to_string(),
-        )
-    })?;
-
-    let schema_content = std::fs::read_to_string(schema_path)?;
+pub fn run<P: Platform>(args: AddArgs, config: &Config, p: &P) -> Result<()> {
+    let schema_content = p.schema().load()?;
     let schema: Value = serde_yaml::from_str(&schema_content)?;
 
-    eprintln!("Adding a new invoice entry interactively.");
-    eprintln!("Press Enter to skip optional fields.\n");
+    let reporter = p.reporter();
+    reporter.status("Adding a new invoice entry interactively.");
+    reporter.status("Press Enter to skip optional fields.\n");
 
-    let data = prompt_from_schema(&schema)?;
+    let data = prompt_from_schema(&schema, p.prompt(), reporter)?;
 
     let date_str = data
         .get("date")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    let name_str = data
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("item");
+    let name_str = data.get("name").and_then(|v| v.as_str()).unwrap_or("item");
 
     let date_prefix = mapper::compact_date(date_str);
     let slug = mapper::slugify(name_str);
@@ -47,23 +38,23 @@ pub fn run(args: AddArgs, config: &Config) -> Result<()> {
     let markdown = render_markdown(&data)?;
 
     if args.dry_run {
-        eprintln!("\n# filename: {base}.md");
-        print!("{markdown}");
+        reporter.status(&format!("\n# filename: {base}.md"));
+        reporter.out(markdown.trim_end());
     } else {
-        std::fs::create_dir_all(&config.transaction_dir)?;
-        let path = mapper::unique_path(&config.transaction_dir, &base, "md");
-        std::fs::write(&path, &markdown)?;
-        println!("Saved: {}", path.display());
+        let filename = mapper::unique_name(p.transactions(), &base, "md");
+        let path = p.transactions().write_new(&filename, &markdown)?;
+        reporter.out(&format!("Saved: {}", path.display()));
 
         if !args.no_sync {
             if let Err(e) = crate::commands::sync::run(
-                crate::cli::SyncArgs {
+                SyncArgs {
                     message: None,
                     no_push: false,
                 },
                 config,
+                p,
             ) {
-                eprintln!("Warning: sync failed: {e}");
+                reporter.status(&format!("Warning: sync failed: {e}"));
             }
         }
     }
@@ -201,7 +192,11 @@ pub(crate) fn looks_like_datetime(s: &str) -> bool {
 // ── Schema-driven prompt loop ─────────────────────────────────────────────────
 
 /// Walk the schema `properties` in order and collect user input for each field.
-fn prompt_from_schema(schema: &Value) -> Result<serde_yaml::Mapping> {
+fn prompt_from_schema(
+    schema: &Value,
+    prompt: &impl Prompt,
+    reporter: &impl Reporter,
+) -> Result<serde_yaml::Mapping> {
     let properties = schema
         .get("properties")
         .and_then(|v| v.as_mapping())
@@ -240,16 +235,18 @@ fn prompt_from_schema(schema: &Value) -> Result<serde_yaml::Mapping> {
                         .and_then(|v| v.as_sequence())
                         .map(|s| s.iter().filter_map(|v| v.as_str()).collect())
                         .unwrap_or_default();
-                    prompt_object_array(key, item_props, &item_required)?
+                    prompt_object_array(key, item_props, &item_required, prompt, reporter)?
                 } else {
-                    prompt_string_array(key)?
+                    prompt_string_array(key, prompt, reporter)?
                 };
 
                 // Always include array fields so the structure is explicit.
                 data.insert(key_val.clone(), Value::Sequence(values));
             }
             _ => {
-                if let Some(value) = prompt_scalar_field(key, prop_def, is_required)? {
+                if let Some(value) =
+                    prompt_scalar_field(key, prop_def, is_required, prompt, reporter)?
+                {
                     data.insert(key_val.clone(), value);
                 }
             }
@@ -261,17 +258,15 @@ fn prompt_from_schema(schema: &Value) -> Result<serde_yaml::Mapping> {
 
 // ── Field-level prompts (I/O shells around pure validators) ───────────────────
 
-fn read_input(prompt: &str) -> io::Result<String> {
-    print!("{prompt}");
-    io::stdout().flush()?;
-    let mut line = String::new();
-    io::stdin().read_line(&mut line)?;
-    Ok(line.trim().to_string())
-}
-
 /// Prompt for a single scalar value (string or number), returning `None` if the
 /// field is optional and the user pressed Enter.
-fn prompt_scalar_field(name: &str, prop: &Value, required: bool) -> Result<Option<Value>> {
+fn prompt_scalar_field(
+    name: &str,
+    prop: &Value,
+    required: bool,
+    prompt: &impl Prompt,
+    reporter: &impl Reporter,
+) -> Result<Option<Value>> {
     let field_type = prop
         .get("type")
         .and_then(|v| v.as_str())
@@ -296,11 +291,11 @@ fn prompt_scalar_field(name: &str, prop: &Value, required: bool) -> Result<Optio
     );
 
     loop {
-        let input = read_input(&format!("{name}{hint_str}: ")).map_err(Error::Io)?;
+        let input = prompt.read_line(&format!("{name}{hint_str}: "))?;
 
         if input.is_empty() {
             if required {
-                eprintln!("  '{name}' is required – please enter a value.");
+                reporter.status(&format!("  '{name}' is required – please enter a value."));
                 continue;
             } else {
                 return Ok(None);
@@ -311,14 +306,20 @@ fn prompt_scalar_field(name: &str, prop: &Value, required: bool) -> Result<Optio
             "number" => match validate_number_input(&input, minimum, maximum) {
                 Ok(n) => return Ok(Some(Value::Number(serde_yaml::Number::from(n)))),
                 Err(msg) => {
-                    eprintln!("  {msg}");
+                    reporter.status(&format!("  {msg}"));
                     continue;
                 }
             },
             _ => {
-                match validate_string_input(&input, min_length, pattern, enum_vals.as_deref(), format)? {
+                match validate_string_input(
+                    &input,
+                    min_length,
+                    pattern,
+                    enum_vals.as_deref(),
+                    format,
+                )? {
                     Some(msg) => {
-                        eprintln!("  {msg}");
+                        reporter.status(&format!("  {msg}"));
                         continue;
                     }
                     None => return Ok(Some(Value::String(input))),
@@ -329,16 +330,22 @@ fn prompt_scalar_field(name: &str, prop: &Value, required: bool) -> Result<Optio
 }
 
 /// Prompt for an array of plain strings (e.g. `tags`).
-fn prompt_string_array(name: &str) -> Result<Vec<Value>> {
+fn prompt_string_array(
+    name: &str,
+    prompt: &impl Prompt,
+    reporter: &impl Reporter,
+) -> Result<Vec<Value>> {
     let mut items: Vec<Value> = Vec::new();
-    eprintln!("  {name}: enter items one by one; leave empty to finish.");
+    reporter.status(&format!(
+        "  {name}: enter items one by one; leave empty to finish."
+    ));
     loop {
         let label = if items.is_empty() {
             format!("  {name}[0] (or Enter to skip): ")
         } else {
             format!("  {name}[{}]: ", items.len())
         };
-        let input = read_input(&label).map_err(Error::Io)?;
+        let input = prompt.read_line(&label)?;
         if input.is_empty() {
             break;
         }
@@ -352,15 +359,17 @@ fn prompt_object_array(
     array_name: &str,
     item_props: Option<&serde_yaml::Mapping>,
     item_required: &[&str],
+    prompt: &impl Prompt,
+    reporter: &impl Reporter,
 ) -> Result<Vec<Value>> {
     let mut items: Vec<Value> = Vec::new();
     loop {
-        let prompt = if items.is_empty() {
+        let label = if items.is_empty() {
             format!("Add a {array_name} entry? [y/N]: ")
         } else {
             format!("Add another {array_name} entry? [y/N]: ")
         };
-        let response = read_input(&prompt).map_err(Error::Io)?;
+        let response = prompt.read_line(&label)?;
         if !matches!(response.to_lowercase().as_str(), "y" | "yes") {
             break;
         }
@@ -370,9 +379,13 @@ fn prompt_object_array(
             for (key_val, prop_def) in props {
                 let key = key_val.as_str().unwrap_or("");
                 let is_req = item_required.contains(&key);
-                if let Some(value) =
-                    prompt_scalar_field(&format!("  {array_name}.{key}"), prop_def, is_req)?
-                {
+                if let Some(value) = prompt_scalar_field(
+                    &format!("  {array_name}.{key}"),
+                    prop_def,
+                    is_req,
+                    prompt,
+                    reporter,
+                )? {
                     item.insert(key_val.clone(), value);
                 }
             }
@@ -414,19 +427,19 @@ mod tests {
 
     #[test]
     fn pattern_currency_valid() {
-        assert_eq!(validate_pattern("USD", "^[A-Z]{3}$").unwrap(), true);
-        assert_eq!(validate_pattern("RSD", "^[A-Z]{3}$").unwrap(), true);
+        assert!(validate_pattern("USD", "^[A-Z]{3}$").unwrap());
+        assert!(validate_pattern("RSD", "^[A-Z]{3}$").unwrap());
     }
 
     #[test]
     fn pattern_currency_lowercase_rejected() {
-        assert_eq!(validate_pattern("usd", "^[A-Z]{3}$").unwrap(), false);
+        assert!(!validate_pattern("usd", "^[A-Z]{3}$").unwrap());
     }
 
     #[test]
     fn pattern_currency_wrong_length() {
-        assert_eq!(validate_pattern("US", "^[A-Z]{3}$").unwrap(), false);
-        assert_eq!(validate_pattern("USDD", "^[A-Z]{3}$").unwrap(), false);
+        assert!(!validate_pattern("US", "^[A-Z]{3}$").unwrap());
+        assert!(!validate_pattern("USDD", "^[A-Z]{3}$").unwrap());
     }
 
     #[test]
@@ -483,14 +496,7 @@ mod tests {
 
     #[test]
     fn hint_combines_all() {
-        let h = build_hint(
-            Some("uri"),
-            None,
-            None,
-            None,
-            None,
-            false,
-        );
+        let h = build_hint(Some("uri"), None, None, None, None, false);
         assert_eq!(h, " (format: uri, optional)");
     }
 
@@ -498,7 +504,7 @@ mod tests {
 
     #[test]
     fn number_valid_no_constraints() {
-        assert_eq!(validate_number_input("3.14", None, None).unwrap(), 3.14);
+        assert_eq!(validate_number_input("2.5", None, None).unwrap(), 2.5);
     }
 
     #[test]

@@ -1,36 +1,53 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::error::Result;
 use crate::invoice::Invoice;
+use crate::ports::{Reporter, TransactionStore};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Write one Markdown file per item from `invoice` into `output_dir`.
+/// Write one Markdown file per item from `invoice` into the transaction store.
 /// Returns the list of paths that were created.
-pub fn write_to_dir(invoice: &Invoice, output_dir: &Path) -> Result<Vec<PathBuf>> {
-    std::fs::create_dir_all(output_dir)?;
+pub fn write_invoice(
+    invoice: &Invoice,
+    store: &impl TransactionStore,
+    reporter: &impl Reporter,
+) -> Result<Vec<PathBuf>> {
     let date_prefix = compact_date(&invoice.date);
     let mut written = Vec::with_capacity(invoice.items.len());
 
     for item in &invoice.items {
         let base = format!("{date_prefix}-{}", slugify(&item.name));
-        let path = unique_path(output_dir, &base, "md");
-        let content = render_markdown(invoice, &item.name, item.quantity, item.unit_price, item.total);
-        std::fs::write(&path, content)?;
-        println!("Saved: {}", path.display());
+        let filename = unique_name(store, &base, "md");
+        let content = render_markdown(
+            invoice,
+            &item.name,
+            item.quantity,
+            item.unit_price,
+            item.total,
+        );
+        let path = store.write_new(&filename, &content)?;
+        reporter.out(&format!("Saved: {}", path.display()));
         written.push(path);
     }
 
     Ok(written)
 }
 
-/// Print one Markdown block per item to stdout (dry-run mode).
-pub fn print_to_stdout(invoice: &Invoice) {
+/// Print one Markdown block per item (dry-run mode).
+pub fn print_invoice(invoice: &Invoice, reporter: &impl Reporter) {
     let date_prefix = compact_date(&invoice.date);
     for item in &invoice.items {
         let base = format!("{date_prefix}-{}", slugify(&item.name));
-        println!("# filename: {base}.md");
-        print!("{}", render_markdown(invoice, &item.name, item.quantity, item.unit_price, item.total));
+        reporter.out(&format!("# filename: {base}.md"));
+        let content = render_markdown(
+            invoice,
+            &item.name,
+            item.quantity,
+            item.unit_price,
+            item.total,
+        );
+        reporter.out(content.trim_end());
     }
 }
 
@@ -85,7 +102,7 @@ pub fn render_markdown(
 
 /// Convert `"YYYY-MM-DDTHH:MM:SS"` → `"YYYYMMDDTHHMMSS"` for use in filenames.
 pub fn compact_date(date: &str) -> String {
-    date.replace('-', "").replace(':', "")
+    date.replace(['-', ':'], "")
 }
 
 /// Convert an arbitrary string into a lowercase, ASCII-only, hyphen-separated slug.
@@ -115,17 +132,17 @@ fn yaml_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Return a path in `dir` whose filename `{base}.{ext}` does not yet exist.
+/// Return a filename `{base}.{ext}` that does not yet exist in `store`.
 /// Appends `-01`, `-02`, … until a free slot is found.
-pub fn unique_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
-    let candidate = dir.join(format!("{base}.{ext}"));
-    if !candidate.exists() {
+pub fn unique_name(store: &impl TransactionStore, base: &str, ext: &str) -> String {
+    let candidate = format!("{base}.{ext}");
+    if !store.exists(&candidate) {
         return candidate;
     }
     let mut n = 1u32;
     loop {
-        let candidate = dir.join(format!("{base}-{n:02}.{ext}"));
-        if !candidate.exists() {
+        let candidate = format!("{base}-{n:02}.{ext}");
+        if !store.exists(&candidate) {
             return candidate;
         }
         n += 1;

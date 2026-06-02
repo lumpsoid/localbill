@@ -1,36 +1,30 @@
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::Path;
 
 use crate::cli::{ReportArgs, ReportCommand};
 use crate::config::Config;
 use crate::error::Result;
+use crate::ports::{Platform, Reporter, TransactionStore};
 
-pub fn run(args: ReportArgs, config: &Config) -> Result<()> {
+pub fn run<P: Platform>(args: ReportArgs, _config: &Config, p: &P) -> Result<()> {
     match args.command {
-        ReportCommand::Monthly { year, month } => monthly(&config.transaction_dir, year, month),
+        ReportCommand::Monthly { year, month } => monthly(p, year, month),
     }
 }
 
 // ── monthly ───────────────────────────────────────────────────────────────────
 
-fn monthly(dir: &Path, filter_year: Option<u32>, filter_month: Option<u32>) -> Result<()> {
+fn monthly<P: Platform>(p: &P, filter_year: Option<u32>, filter_month: Option<u32>) -> Result<()> {
     // BTreeMap keeps months in sorted order automatically.
     let mut totals: BTreeMap<String, f64> = BTreeMap::new();
     let mut grand_total = 0.0f64;
     let mut count = 0usize;
 
-    for entry in fs::read_dir(dir)?.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+    for doc in p.transactions().list()? {
+        if doc.path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
 
-        let Ok(content) = fs::read_to_string(&path) else {
-            continue;
-        };
-
-        let Some((date, price)) = extract_date_and_price(&content) else {
+        let Some((date, price)) = extract_date_and_price(&doc.content) else {
             continue;
         };
 
@@ -53,19 +47,23 @@ fn monthly(dir: &Path, filter_year: Option<u32>, filter_month: Option<u32>) -> R
         count += 1;
     }
 
+    let reporter = p.reporter();
+
     if totals.is_empty() {
-        println!("No transactions found.");
+        reporter.out("No transactions found.");
         return Ok(());
     }
 
-    // Header
-    println!("{:<10}  {:>12}", "Month", "Total (RSD)");
-    println!("{}", "-".repeat(26));
+    reporter.out(&format!("{:<10}  {:>12}", "Month", "Total (RSD)"));
+    reporter.out(&"-".repeat(26));
     for (ym, total) in &totals {
-        println!("{ym:<10}  {:>12.2}", total);
+        reporter.out(&format!("{ym:<10}  {total:>12.2}"));
     }
-    println!("{}", "-".repeat(26));
-    println!("{:<10}  {:>12.2}  ({count} items)", "TOTAL", grand_total);
+    reporter.out(&"-".repeat(26));
+    reporter.out(&format!(
+        "{:<10}  {grand_total:>12.2}  ({count} items)",
+        "TOTAL"
+    ));
 
     Ok(())
 }
@@ -90,12 +88,7 @@ fn extract_date_and_price(content: &str) -> Option<(String, f64)> {
     for line in inner.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("date:") {
-            date = Some(
-                rest.trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string(),
-            );
+            date = Some(rest.trim().trim_matches('"').trim_matches('\'').to_string());
         } else if let Some(rest) = line.strip_prefix("price_total:") {
             price = rest.trim().parse::<f64>().ok();
         }

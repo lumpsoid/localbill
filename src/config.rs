@@ -1,8 +1,9 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
+use crate::ports::Env;
 
 pub struct Config {
     pub transaction_dir: PathBuf,
@@ -19,7 +20,10 @@ pub struct Config {
 
 impl Config {
     pub fn api_base_url(&self) -> String {
-        format!("http://{}:{}{}", self.api_host, self.api_port, self.api_endpoint)
+        format!(
+            "http://{}:{}{}",
+            self.api_host, self.api_port, self.api_endpoint
+        )
     }
 }
 
@@ -60,38 +64,54 @@ struct ConfigFile {
 // ── public loader ─────────────────────────────────────────────────────────────
 
 /// Load configuration from the XDG config file (or the path supplied by the
-/// user).  Environment variables always override file values.
-pub fn load(override_path: Option<&std::path::Path>) -> Result<Config> {
+/// user). Reads the file from disk, then delegates merging to [`parse`].
+///
+/// This is the one place config touches the filesystem directly — it runs
+/// before the [`crate::ports::Platform`] exists.
+pub fn load<E: Env>(override_path: Option<&Path>, env: &E) -> Result<Config> {
     let config_path = match override_path {
         Some(p) => p.to_path_buf(),
         None => {
-            let xdg = std::env::var("XDG_CONFIG_HOME")
+            let xdg = env
+                .var("XDG_CONFIG_HOME")
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| home_dir().join(".config"));
+                .unwrap_or_else(|| home_dir(env).join(".config"));
             xdg.join("localbills").join("config.yaml")
         }
     };
 
-    let file: ConfigFile = if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path).map_err(|e| {
-            Error::Config(format!("Cannot read {}: {e}", config_path.display()))
-        })?;
-        serde_yaml::from_str(&content).map_err(|e| {
-            Error::Config(format!("Invalid YAML in {}: {e}", config_path.display()))
-        })?
-    } else {
-        ConfigFile::default()
+    let file_text =
+        if config_path.exists() {
+            Some(std::fs::read_to_string(&config_path).map_err(|e| {
+                Error::Config(format!("Cannot read {}: {e}", config_path.display()))
+            })?)
+        } else {
+            None
+        };
+
+    parse(file_text.as_deref(), env)
+}
+
+/// Merge the optional config-file text with environment-variable overrides into
+/// a [`Config`]. Pure with respect to I/O (apart from the injected [`Env`]),
+/// so it is directly unit-testable. Environment variables always win.
+pub fn parse<E: Env>(file_text: Option<&str>, env: &E) -> Result<Config> {
+    let file: ConfigFile = match file_text {
+        Some(content) => serde_yaml::from_str(content)
+            .map_err(|e| Error::Config(format!("Invalid config YAML: {e}")))?,
+        None => ConfigFile::default(),
     };
 
     // Helper: env var first, then YAML file value.
     let env_or = |env_key: &str, file_val: Option<String>| -> Option<String> {
-        std::env::var(env_key).ok().or(file_val)
+        env.var(env_key).or(file_val)
     };
 
-    let home = home_dir();
-    let xdg_data = std::env::var("XDG_DATA_HOME")
+    let home = home_dir(env);
+    let xdg_data = env
+        .var("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| home.join(".local").join("share"));
+        .unwrap_or_else(|| home.join(".local").join("share"));
 
     let transaction_dir = env_or("TRANSACTION_DIR", file.transaction_dir)
         .map(PathBuf::from)
@@ -109,17 +129,16 @@ pub fn load(override_path: Option<&std::path::Path>) -> Result<Config> {
         .map(PathBuf::from)
         .unwrap_or_else(|| xdg_data.join("localbills").join("failed.txt"));
 
-    let api_host = env_or("API_HOST", file.api.host)
-        .unwrap_or_else(|| "192.168.1.2".to_string());
+    let api_host = env_or("API_HOST", file.api.host).unwrap_or_else(|| "192.168.1.2".to_string());
 
-    let api_port = std::env::var("API_PORT")
-        .ok()
+    let api_port = env
+        .var("API_PORT")
         .and_then(|s| s.parse().ok())
         .or(file.api.port)
         .unwrap_or(8087u16);
 
-    let api_endpoint = env_or("API_ENDPOINT", file.api.endpoint)
-        .unwrap_or_else(|| "/queue".to_string());
+    let api_endpoint =
+        env_or("API_ENDPOINT", file.api.endpoint).unwrap_or_else(|| "/queue".to_string());
 
     let schema_file = env_or("SCHEMA_FILE", file.schema_file).map(PathBuf::from);
 
@@ -135,8 +154,8 @@ pub fn load(override_path: Option<&std::path::Path>) -> Result<Config> {
     })
 }
 
-fn home_dir() -> PathBuf {
-    std::env::var("HOME")
+fn home_dir<E: Env>(env: &E) -> PathBuf {
+    env.var("HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+        .unwrap_or_else(|| PathBuf::from("."))
 }

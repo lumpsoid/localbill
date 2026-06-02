@@ -1,11 +1,10 @@
 use std::fs;
-use std::path::Path;
 
-use crate::cli::InsertArgs;
+use crate::cli::{InsertArgs, SyncArgs};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::invoice::{mapper, parser};
-use crate::net;
+use crate::ports::{FailedLog, Network, Platform, QueueStore, Reporter, TransactionStore};
 
 /// The result of attempting to load URLs from a file.
 enum LoadedUrls {
@@ -15,9 +14,9 @@ enum LoadedUrls {
     Empty,
 }
 
-/// Reads `path`, strips blank lines and `#`-comments, and returns the URLs.
-fn load_urls_from_file(path: &Path) -> Result<LoadedUrls> {
-    let contents = fs::read_to_string(path).map_err(Error::Io)?;
+/// Parse `contents` (a file of one URL per line), stripping blank lines and
+/// `#`-comments. Pure — the file read happens in the caller.
+fn parse_url_list(contents: &str) -> LoadedUrls {
     let urls: Vec<String> = contents
         .lines()
         .map(str::trim)
@@ -26,27 +25,33 @@ fn load_urls_from_file(path: &Path) -> Result<LoadedUrls> {
         .collect();
 
     if urls.is_empty() {
-        Ok(LoadedUrls::Empty)
+        LoadedUrls::Empty
     } else {
-        Ok(LoadedUrls::Found(urls))
+        LoadedUrls::Found(urls)
     }
 }
 
-pub fn run(args: InsertArgs, config: &Config) -> Result<()> {
+pub fn run<P: Platform>(args: InsertArgs, config: &Config, p: &P) -> Result<()> {
+    let reporter = p.reporter();
+
     if let Some(file_path) = &args.file {
-        let urls = match load_urls_from_file(file_path)? {
+        // The `--file` path is user-supplied and arbitrary, so it is read
+        // directly here rather than through a store (the one remaining direct
+        // read in the command layer).
+        let contents = fs::read_to_string(file_path).map_err(Error::Io)?;
+        let urls = match parse_url_list(&contents) {
             LoadedUrls::Empty => {
-                eprintln!("No URLs found in file.");
+                reporter.status("No URLs found in file.");
                 return Ok(());
             }
             LoadedUrls::Found(urls) => urls,
         };
 
-        eprintln!("Processing {} URL(s) from file.", urls.len());
+        reporter.status(&format!("Processing {} URL(s) from file.", urls.len()));
         let mut errors = 0usize;
         for url in &urls {
-            if let Err(e) = run_one(url, &args, config) {
-                eprintln!("Error processing {url}: {e}");
+            if let Err(e) = run_one(url, &args, config, p) {
+                reporter.status(&format!("Error processing {url}: {e}"));
                 errors += 1;
             }
         }
@@ -56,65 +61,70 @@ pub fn run(args: InsertArgs, config: &Config) -> Result<()> {
         Ok(())
     } else {
         let url = args.url.as_deref().unwrap_or("").trim().to_string();
-        run_one(&url, &args, config)
+        run_one(&url, &args, config, p)
     }
 }
 
-fn run_one(url: &str, args: &InsertArgs, config: &Config) -> Result<()> {
+pub fn run_one<P: Platform>(url: &str, args: &InsertArgs, config: &Config, p: &P) -> Result<()> {
+    let reporter = p.reporter();
+
     if url.is_empty() {
         return Err(Error::Parse("URL must not be empty".to_string()));
     }
 
     // ── Duplicate check ───────────────────────────────────────────────────────
-    if !args.force && config.transaction_dir.exists() {
-        if is_duplicate(url, &config.transaction_dir) {
-            eprintln!("Skipped: URL already recorded (use --force to override):\n  {url}");
-            return Ok(());
-        }
+    if !args.force && is_duplicate(url, p.transactions())? {
+        reporter.status(&format!(
+            "Skipped: URL already recorded (use --force to override):\n  {url}"
+        ));
+        return Ok(());
     }
 
     // ── Offline → queue ───────────────────────────────────────────────────────
-    if !net::has_internet() {
-        eprintln!("No internet connection – queuing URL for later processing.");
-        queue_url(url, &config.queue_file)?;
+    if !p.network().has_internet() {
+        reporter.status("No internet connection – queuing URL for later processing.");
+        p.queue().enqueue(url)?;
+        reporter.status(&format!("Queued: {url}"));
         // Best-effort offline sync (commits any pending local changes).
         let _ = crate::commands::sync::commit_and_push(
             &config.data_dir,
             Some("Offline"),
             None,
             /*push=*/ false,
+            p,
         );
         return Ok(());
     }
 
     // ── Parse ─────────────────────────────────────────────────────────────────
-    eprintln!("Parsing: {url}");
-    let invoice = match parser::parse(url) {
+    reporter.status(&format!("Parsing: {url}"));
+    let invoice = match parser::parse(url, p.http()) {
         Ok(inv) => inv,
         Err(e) => {
-            eprintln!("Failed to parse invoice: {e}");
-            record_failure(url, &config.failed_links_file)?;
+            reporter.status(&format!("Failed to parse invoice: {e}"));
+            p.failed().record(url)?;
             return Err(e);
         }
     };
 
     // ── Write / dry-run ───────────────────────────────────────────────────────
     if args.dry_run {
-        mapper::print_to_stdout(&invoice);
+        mapper::print_invoice(&invoice, reporter);
     } else {
-        let written = mapper::write_to_dir(&invoice, &config.transaction_dir)?;
-        println!("Wrote {} file(s).", written.len());
+        let written = mapper::write_invoice(&invoice, p.transactions(), reporter)?;
+        reporter.out(&format!("Wrote {} file(s).", written.len()));
 
         // ── Sync ──────────────────────────────────────────────────────────────
         if !args.no_sync {
             if let Err(e) = crate::commands::sync::run(
-                crate::cli::SyncArgs {
+                SyncArgs {
                     message: None,
                     no_push: false,
                 },
                 config,
+                p,
             ) {
-                eprintln!("Warning: sync failed: {e}");
+                reporter.status(&format!("Warning: sync failed: {e}"));
             }
         }
     }
@@ -124,69 +134,24 @@ fn run_one(url: &str, args: &InsertArgs, config: &Config) -> Result<()> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// True when `url` appears literally in any file inside `dir`.
-fn is_duplicate(url: &str, dir: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            if let Ok(contents) = fs::read_to_string(&path) {
-                if contents.contains(url) {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Append `url` to the local queue file (creating parent directories as needed).
-pub fn queue_url(url: &str, queue_file: &Path) -> Result<()> {
-    if let Some(parent) = queue_file.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    use std::io::Write;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(queue_file)?;
-    writeln!(file, "{url}")?;
-    eprintln!("Queued: {url}");
-    Ok(())
-}
-
-/// Append `url` to the failed-links log file.
-fn record_failure(url: &str, failed_file: &Path) -> Result<()> {
-    if let Some(parent) = failed_file.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    use std::io::Write;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(failed_file)?;
-    writeln!(file, "{url}")?;
-    Ok(())
+/// True when `url` appears literally in any `.md` doc in the store.
+fn is_duplicate(url: &str, store: &impl TransactionStore) -> Result<bool> {
+    Ok(store
+        .list()?
+        .iter()
+        .filter(|d| d.path.extension().and_then(|e| e.to_str()) == Some("md"))
+        .any(|d| d.content.contains(url)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    fn write_temp(content: &str) -> NamedTempFile {
-        let mut f = NamedTempFile::new().unwrap();
-        write!(f, "{content}").unwrap();
-        f
-    }
 
     #[test]
     fn parses_valid_urls() {
-        let f = write_temp("https://example.com/1\nhttps://example.com/2\n");
-        let LoadedUrls::Found(urls) = load_urls_from_file(f.path()).unwrap() else {
+        let LoadedUrls::Found(urls) =
+            parse_url_list("https://example.com/1\nhttps://example.com/2\n")
+        else {
             panic!("expected Found");
         };
         assert_eq!(urls, ["https://example.com/1", "https://example.com/2"]);
@@ -194,9 +159,9 @@ mod tests {
 
     #[test]
     fn skips_blank_lines_and_comments() {
-        let f =
-            write_temp("# comment\n\nhttps://example.com/1\n  \n# another\nhttps://example.com/2");
-        let LoadedUrls::Found(urls) = load_urls_from_file(f.path()).unwrap() else {
+        let LoadedUrls::Found(urls) = parse_url_list(
+            "# comment\n\nhttps://example.com/1\n  \n# another\nhttps://example.com/2",
+        ) else {
             panic!("expected Found");
         };
         assert_eq!(urls, ["https://example.com/1", "https://example.com/2"]);
@@ -204,25 +169,17 @@ mod tests {
 
     #[test]
     fn trims_whitespace() {
-        let f = write_temp("  https://example.com/1  \n");
-        let LoadedUrls::Found(urls) = load_urls_from_file(f.path()).unwrap() else {
+        let LoadedUrls::Found(urls) = parse_url_list("  https://example.com/1  \n") else {
             panic!("expected Found");
         };
         assert_eq!(urls[0], "https://example.com/1");
     }
 
     #[test]
-    fn returns_empty_for_blank_file() {
-        let f = write_temp("# just a comment\n\n   \n");
+    fn returns_empty_for_blank_content() {
         assert!(matches!(
-            load_urls_from_file(f.path()).unwrap(),
+            parse_url_list("# just a comment\n\n   \n"),
             LoadedUrls::Empty
         ));
-    }
-
-    #[test]
-    fn returns_error_for_missing_file() {
-        let result = load_urls_from_file(Path::new("/nonexistent/path.txt"));
-        assert!(result.is_err());
     }
 }

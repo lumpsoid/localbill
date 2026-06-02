@@ -1,10 +1,13 @@
+mod adapters;
 mod cli;
 mod commands;
 mod config;
 mod error;
 mod invoice;
-mod net;
+mod ports;
 mod sanitize;
+#[cfg(test)]
+mod testing;
 
 use clap::Parser;
 use cli::{Cli, Command};
@@ -20,15 +23,17 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let config = config::load(cli.config.as_deref())?;
+    let env = adapters::env::StdEnv;
+    let config = config::load(cli.config.as_deref(), &env)?;
+    let platform = adapters::prod::ProdPlatform::new(&config);
 
     match cli.command {
-        Command::Add(args) => commands::add::run(args, &config),
-        Command::Insert(args) => commands::insert::run(args, &config),
-        Command::Queue(args) => commands::queue::run(args, &config),
-        Command::Validate(args) => commands::validate::run(args, &config),
-        Command::Report(args) => commands::report::run(args, &config),
-        Command::Search(args) => commands::search::run(args, &config),
-        Command::Sync(args) => commands::sync::run(args, &config),
+        Command::Add(args) => commands::add::run(args, &config, &platform),
+        Command::Insert(args) => commands::insert::run(args, &config, &platform),
+        Command::Queue(args) => commands::queue::run(args, &config, &platform),
+        Command::Validate(args) => commands::validate::run(args, &config, &platform),
+        Command::Report(args) => commands::report::run(args, &config, &platform),
+        Command::Search(args) => commands::search::run(args, &config, &platform),
+        Command::Sync(args) => commands::sync::run(args, &config, &platform),
     }
 }

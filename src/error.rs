@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),
-    Http(ureq::Error),
+    Http(String),
     Json(serde_json::Error),
     Yaml(serde_yaml::Error),
     Parse(String),
@@ -36,7 +36,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Io(e) => write!(f, "IO error: {e}"),
-            Error::Http(e) => write!(f, "HTTP error: {e}"),
+            Error::Http(msg) => write!(f, "HTTP error: {msg}"),
             Error::Json(e) => write!(f, "JSON parse error: {e}"),
             Error::Yaml(e) => write!(f, "YAML parse error: {e}"),
             Error::Parse(msg) => write!(f, "Parse error: {msg}"),
@@ -63,12 +63,6 @@ impl std::error::Error for Error {
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Error::Io(e)
-    }
-}
-
-impl From<ureq::Error> for Error {
-    fn from(e: ureq::Error) -> Self {
-        Error::Http(e)
     }
 }
 

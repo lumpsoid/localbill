@@ -2,24 +2,18 @@ use scraper::{Html, Selector};
 
 use crate::error::{Error, Result};
 use crate::invoice::{Invoice, InvoiceItem};
+use crate::ports::Http;
 use crate::sanitize::cyrillic_to_latin;
-
-const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
-    AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
 
 const SPECIFICATIONS_URL: &str = "https://suf.purs.gov.rs/specifications";
 
-/// Parse a Serbian fiscal invoice URL, retrying up to `max_attempts` times
-/// when the token endpoint returns an error (tokens can expire mid-request).
-pub fn parse(url: &str) -> Result<Invoice> {
-    let agent = ureq::Agent::config_builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .into();
-    parse_with_agent(url, &agent, 3)
+/// Parse a Serbian fiscal invoice URL, retrying up to 3 times when the token
+/// endpoint returns an error (tokens can expire mid-request).
+pub fn parse(url: &str, http: &impl Http) -> Result<Invoice> {
+    parse_with_retries(url, http, 3)
 }
 
-fn parse_with_agent(url: &str, agent: &ureq::Agent, max_attempts: u32) -> Result<Invoice> {
+fn parse_with_retries(url: &str, http: &impl Http, max_attempts: u32) -> Result<Invoice> {
     let mut last_err = Error::Parse("max attempts exhausted".to_string());
 
     for attempt in 1..=max_attempts {
@@ -28,7 +22,7 @@ fn parse_with_agent(url: &str, agent: &ureq::Agent, max_attempts: u32) -> Result
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
 
-        match try_parse(url, agent) {
+        match try_parse(url, http) {
             Ok(inv) => return Ok(inv),
             Err(e) => {
                 let msg = e.to_string();
@@ -46,13 +40,8 @@ fn parse_with_agent(url: &str, agent: &ureq::Agent, max_attempts: u32) -> Result
     Err(last_err)
 }
 
-fn try_parse(url: &str, agent: &ureq::Agent) -> Result<Invoice> {
-    let body = agent
-        .get(url)
-        .call()?
-        .body_mut()
-        .read_to_string()
-        .map_err(Error::Http)?;
+fn try_parse(url: &str, http: &impl Http) -> Result<Invoice> {
+    let body = http.get_text(url)?;
 
     let doc = Html::parse_document(&body);
 
@@ -67,7 +56,7 @@ fn try_parse(url: &str, agent: &ureq::Agent) -> Result<Invoice> {
     let total_price = parse_price(&price_raw)?;
 
     let token = extract_token(&body)?;
-    let items = fetch_items(agent, &invoice_number, &token)?;
+    let items = fetch_items(http, &invoice_number, &token)?;
 
     Ok(Invoice {
         invoice_number,
@@ -110,19 +99,14 @@ fn extract_token(html: &str) -> Result<String> {
 
 // ── Items API ─────────────────────────────────────────────────────────────────
 
-fn fetch_items(agent: &ureq::Agent, invoice_number: &str, token: &str) -> Result<Vec<InvoiceItem>> {
+fn fetch_items(http: &impl Http, invoice_number: &str, token: &str) -> Result<Vec<InvoiceItem>> {
     let body = format!(
         "invoiceNumber={}&token={}",
         percent_encode(invoice_number),
         percent_encode(token)
     );
 
-    let response: serde_json::Value = agent
-        .post(SPECIFICATIONS_URL)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .send(&body)?
-        .body_mut()
-        .read_json::<serde_json::Value>()?;
+    let response = http.post_form(SPECIFICATIONS_URL, &body)?;
 
     if !response["success"].as_bool().unwrap_or(false) {
         return Err(Error::Parse("Failed to fetch invoice items".to_string()));

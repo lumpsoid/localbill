@@ -1,28 +1,36 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::cli::ValidateArgs;
 use crate::config::Config;
 use crate::error::{Error, Result, ValidationError};
+use crate::ports::{Platform, Reporter, SchemaSource, StoredDoc, TransactionStore};
 
-pub fn run(args: ValidateArgs, config: &Config) -> Result<()> {
-    let schema_path = config.schema_file.as_ref().ok_or_else(|| {
-        Error::Config(
-            "SCHEMA_FILE is not set. Add it to your config file or set the SCHEMA_FILE \
-             environment variable."
-                .to_string(),
-        )
-    })?;
-
-    let validator = load_schema(schema_path)?;
+pub fn run<P: Platform>(args: ValidateArgs, config: &Config, p: &P) -> Result<()> {
+    let schema_content = p.schema().load()?;
+    let validator = compile_schema(&schema_content)?;
+    let reporter = p.reporter();
 
     let target = args
         .path
+        .clone()
         .unwrap_or_else(|| config.transaction_dir.clone());
 
-    let files = collect_files(&target)?;
-    if files.is_empty() {
-        eprintln!("No .md / .yaml files found in {}.", target.display());
+    let docs = if target.is_file() {
+        vec![p.transactions().read(&target)?]
+    } else if target.is_dir() {
+        p.transactions().list_at(&target)?
+    } else {
+        return Err(Error::Config(format!(
+            "path does not exist: {}",
+            target.display()
+        )));
+    };
+
+    if docs.is_empty() {
+        reporter.status(&format!(
+            "No .md / .yaml files found in {}.",
+            target.display()
+        ));
         return Err(Error::Config("no files to validate".to_string()));
     }
 
@@ -31,19 +39,19 @@ pub fn run(args: ValidateArgs, config: &Config) -> Result<()> {
 
     let mut all_errors: Vec<ValidationError> = Vec::new();
 
-    for path in &files {
-        match validate_file(path, &validator) {
+    for doc in &docs {
+        match validate_doc(doc, &validator) {
             Ok(errs) if errs.is_empty() => {
                 if !errors_only {
-                    println!("ok  {}", path.display());
+                    reporter.out(&format!("ok  {}", doc.path.display()));
                 }
             }
             Ok(errs) => {
                 if errors_only {
-                    println!("{}", path.display());
+                    reporter.out(&doc.path.display().to_string());
                 } else {
                     for e in &errs {
-                        eprintln!("{e}");
+                        reporter.status(&e.to_string());
                     }
                 }
                 all_errors.extend(errs);
@@ -53,14 +61,14 @@ pub fn run(args: ValidateArgs, config: &Config) -> Result<()> {
             }
             Err(e) => {
                 let ve = ValidationError {
-                    path: path.clone(),
+                    path: doc.path.clone(),
                     field: "parse".to_string(),
                     message: e.to_string(),
                 };
                 if errors_only {
-                    println!("{}", path.display());
+                    reporter.out(&doc.path.display().to_string());
                 } else {
-                    eprintln!("{ve}");
+                    reporter.status(&ve.to_string());
                 }
                 all_errors.push(ve);
                 if !continue_on_error {
@@ -71,49 +79,39 @@ pub fn run(args: ValidateArgs, config: &Config) -> Result<()> {
     }
 
     if all_errors.is_empty() {
-        println!("\nAll {} file(s) are valid.", files.len());
+        reporter.out(&format!("\nAll {} file(s) are valid.", docs.len()));
         Ok(())
     } else {
-        eprintln!(
+        reporter.status(&format!(
             "\n{} error(s) found in {} file(s).",
             all_errors.len(),
-            files.len()
-        );
+            docs.len()
+        ));
         Err(Error::Validation(all_errors))
     }
 }
 
-// ── Schema loading ────────────────────────────────────────────────────────────
+// ── Schema compilation ──────────────────────────────────────────────────────────
 
-fn load_schema(path: &Path) -> Result<jsonschema::Validator> {
-    let content = fs::read_to_string(path).map_err(|e| {
-        Error::Config(format!("Cannot read schema file {}: {e}", path.display()))
-    })?;
-
-    let schema_json = yaml_to_json(&content)?;
-
-    jsonschema::validator_for(&schema_json).map_err(|e| {
-        Error::Config(format!(
-            "Invalid JSON Schema in {}: {e}",
-            path.display()
-        ))
-    })
+fn compile_schema(content: &str) -> Result<jsonschema::Validator> {
+    let schema_json = yaml_to_json(content)?;
+    jsonschema::validator_for(&schema_json)
+        .map_err(|e| Error::Config(format!("Invalid JSON Schema: {e}")))
 }
 
-// ── Per-file validation ───────────────────────────────────────────────────────
+// ── Per-doc validation ──────────────────────────────────────────────────────────
 
-fn validate_file(
-    path: &Path,
+fn validate_doc(
+    doc: &StoredDoc,
     validator: &jsonschema::Validator,
 ) -> Result<Vec<ValidationError>> {
-    let raw = fs::read_to_string(path)?;
-    let yaml_text = extract_front_matter(&raw, path)?;
+    let yaml_text = extract_front_matter(&doc.content, &doc.path)?;
     let instance = yaml_to_json(yaml_text)?;
 
     let errors = validator
         .iter_errors(&instance)
         .map(|e| ValidationError {
-            path: path.to_path_buf(),
+            path: doc.path.clone(),
             field: e.instance_path().to_string(),
             message: e.to_string(),
         })
@@ -134,43 +132,13 @@ fn extract_front_matter<'a>(text: &'a str, path: &Path) -> Result<&'a str> {
     }
     let mut parts = text.splitn(3, "---");
     parts.next(); // empty slice before first ---
-    parts.next().ok_or_else(|| {
-        Error::Parse(format!("{}: malformed front-matter", path.display()))
-    })
+    parts
+        .next()
+        .ok_or_else(|| Error::Parse(format!("{}: malformed front-matter", path.display())))
 }
 
 /// Parse a YAML string into a `serde_json::Value`.
-///
-/// `serde_yaml::Value` implements `Serialize`, so we go through serde's data
-/// model without an intermediate JSON string.
 fn yaml_to_json(yaml: &str) -> Result<serde_json::Value> {
     let yaml_val: serde_yaml::Value = serde_yaml::from_str(yaml)?;
     serde_json::to_value(yaml_val).map_err(Error::Json)
-}
-
-// ── File collection ───────────────────────────────────────────────────────────
-
-fn collect_files(target: &Path) -> Result<Vec<PathBuf>> {
-    if target.is_file() {
-        return Ok(vec![target.to_path_buf()]);
-    }
-    if !target.is_dir() {
-        return Err(Error::Config(format!(
-            "path does not exist: {}",
-            target.display()
-        )));
-    }
-    let mut files: Vec<PathBuf> = fs::read_dir(target)?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && matches!(
-                    p.extension().and_then(|e| e.to_str()),
-                    Some("md") | Some("yaml") | Some("yml")
-                )
-        })
-        .collect();
-    files.sort();
-    Ok(files)
 }
