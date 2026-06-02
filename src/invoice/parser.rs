@@ -10,16 +10,23 @@ const SPECIFICATIONS_URL: &str = "https://suf.purs.gov.rs/specifications";
 /// Parse a Serbian fiscal invoice URL, retrying up to 3 times when the token
 /// endpoint returns an error (tokens can expire mid-request).
 pub fn parse(url: &str, http: &impl Http) -> Result<Invoice> {
-    parse_with_retries(url, http, 3)
+    parse_with_retries(url, http, 3, std::time::Duration::from_secs(1))
 }
 
-fn parse_with_retries(url: &str, http: &impl Http, max_attempts: u32) -> Result<Invoice> {
+/// Like [`parse`], but with an explicit retry count and inter-attempt delay.
+/// Production passes a 1s delay; tests pass `Duration::ZERO` to run instantly.
+pub(crate) fn parse_with_retries(
+    url: &str,
+    http: &impl Http,
+    max_attempts: u32,
+    retry_delay: std::time::Duration,
+) -> Result<Invoice> {
     let mut last_err = Error::Parse("max attempts exhausted".to_string());
 
     for attempt in 1..=max_attempts {
         if attempt > 1 {
             eprintln!("Attempt {attempt}: retrying after token failure…");
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::thread::sleep(retry_delay);
         }
 
         match try_parse(url, http) {

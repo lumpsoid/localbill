@@ -447,7 +447,9 @@ mod tests {
             vec![invoice_page(false), invoice_page(true)],
             vec![items_json()],
         );
-        let inv = parser::parse("http://x", &http).unwrap();
+        // Zero retry delay keeps the test instant (prod uses 1s).
+        let inv = parser::parse_with_retries("http://x", &http, 3, std::time::Duration::ZERO)
+            .unwrap();
         assert_eq!(inv.items.len(), 1);
     }
 
