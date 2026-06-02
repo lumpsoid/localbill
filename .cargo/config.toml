@@ -3,4 +3,7 @@ linker = "aarch64-linux-gnu-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.aarch64-linux-android]
+# android24 = Termux's minimum (Android 7.0). Don't lower (no arm64 device
+# below API 21; no Termux below 24) or raise (narrows device support).
+# Check Termux's current minimum: https://f-droid.org/en/packages/com.termux/
 linker = "aarch64-linux-android24-clang"

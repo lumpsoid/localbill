@@ -33,6 +33,73 @@ The binary will be at `target/release/localbill`. Copy it somewhere on your `$PA
 cp target/release/localbill ~/.local/bin/
 ```
 
+### Cross-compiling for Android (aarch64 / Termux)
+
+The binary can be cross-compiled from a Linux host to run on a 64-bit Android
+device under [Termux](https://termux.dev). The linker is already wired up in
+[`.cargo/config.toml`](.cargo/config.toml):
+
+```toml
+[target.aarch64-linux-android]
+linker = "aarch64-linux-android24-clang"
+```
+
+`android24` means the binary targets **Android API level 24 (Android 7.0)** or
+newer — adjust the number if you need a different minimum.
+
+**One-time setup on the host:**
+
+The [`build/bootstrap-ndk.sh`](build/bootstrap-ndk.sh) script automates the NDK
+download. It reads Google's package manifest
+(`repository2-3.xml` — the same file `sdkmanager` uses), picks the latest stable
+NDK, verifies its SHA-1, unzips it under `~/android-ndk`, and prints the exact
+`PATH` line to export:
+
+```bash
+build/bootstrap-ndk.sh                    # latest stable NDK
+NDK_VERSION=r28c build/bootstrap-ndk.sh   # or pin a specific release
+```
+
+Then add the Rust target once:
+
+```bash
+rustup target add aarch64-linux-android
+```
+
+<details>
+<summary>Manual NDK setup (if you'd rather not run the script)</summary>
+
+1. Install the [Android NDK](https://developer.android.com/ndk/downloads)
+   (e.g. unzip it to `~/android-ndk`). It ships the
+   `aarch64-linux-android24-clang` wrapper that `.cargo/config.toml` expects.
+2. Put the NDK's prebuilt LLVM toolchain on your `PATH` so cargo can find the
+   linker (path varies by NDK version / host OS):
+   ```bash
+   export PATH="$HOME/android-ndk/android-ndk-r29/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+   ```
+
+</details>
+
+**Build:**
+
+```bash
+cargo build --release --target aarch64-linux-android
+```
+
+The binary lands at `target/aarch64-linux-android/release/localbill`.
+
+**Deploy to the device** — copy it into Termux (e.g. via `adb push` or a synced
+folder) and put it on Termux's `$PATH`:
+
+```bash
+adb push target/aarch64-linux-android/release/localbill /sdcard/
+# then, inside Termux:
+cp /sdcard/localbill "$PREFIX/bin/" && chmod +x "$PREFIX/bin/localbill"
+```
+
+See [`bin/termux-run.sh`](bin/termux-run.sh) for running the helper scripts
+under Termux's shebang environment.
+
 ### Optional: platform setup scripts
 
 Scripts for installing system dependencies (Python, Git, jq) are provided for common platforms:
