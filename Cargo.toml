@@ -25,5 +25,14 @@ scraper = "0.20"
 jsonschema = { version = "0.44.1", default-features = false }
 regex = { version = "1", default-features = false, features = ["std"] }
 
+# Datetime arithmetic for the interactive `add` offset expressions (+1d, -2h …).
+# `local-offset` is intentionally omitted: "now" comes from the Clock port, so
+# `time` is used only to parse/format/shift an ISO-8601 string.
+time = { version = "0.3.47", features = ["parsing", "formatting", "macros"] }
+
+# Terminal styling for the interactive form, behind the Styler port. Default
+# features are off to drop the event stack (mio/signal-hook) — only `style`.
+crossterm = { version = "0.29.0", default-features = false }
+
 [dev-dependencies]
 tempfile = "3.26.0"

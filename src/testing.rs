@@ -10,7 +10,8 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::ports::{
     Clock, Env, FailedLog, Http, Network, Platform, Progress, ProgressTask, Prompt, QueueStore,
-    RemoteQueue, RemoteReachable, Reporter, SchemaSource, StoredDoc, TransactionStore, Vcs,
+    RemoteQueue, RemoteReachable, Reporter, SchemaSource, StoredDoc, Style, Styler,
+    TransactionStore, Vcs,
 };
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
@@ -116,9 +117,25 @@ impl Clock for FixedClock {
 pub struct ScriptedPrompt {
     pub answers: RefCell<VecDeque<String>>,
 }
+impl ScriptedPrompt {
+    /// Build a prompt that replays `answers` in order.
+    pub fn with(answers: Vec<&str>) -> Self {
+        Self {
+            answers: RefCell::new(answers.into_iter().map(String::from).collect()),
+        }
+    }
+}
 impl Prompt for ScriptedPrompt {
     fn read_line(&self, _prompt: &str) -> Result<String> {
         Ok(self.answers.borrow_mut().pop_front().unwrap_or_default())
+    }
+}
+
+/// No-op styler: returns text verbatim, so tests assert on plain strings.
+pub struct FakeStyler;
+impl Styler for FakeStyler {
+    fn paint(&self, _style: Style, text: &str) -> String {
+        text.to_string()
     }
 }
 
@@ -309,6 +326,7 @@ pub struct TestPlatform {
     pub clock: FixedClock,
     pub prompt: ScriptedPrompt,
     pub reporter: RecordingReporter,
+    pub styler: FakeStyler,
     pub progress: RecordingProgress,
     pub transactions: MemTransactions,
     pub queue: MemQueue,
@@ -327,6 +345,7 @@ impl Default for TestPlatform {
             clock: FixedClock,
             prompt: ScriptedPrompt::default(),
             reporter: RecordingReporter::default(),
+            styler: FakeStyler,
             progress: RecordingProgress::default(),
             transactions: MemTransactions::default(),
             queue: MemQueue::default(),
@@ -345,6 +364,7 @@ impl Platform for TestPlatform {
     type Clock = FixedClock;
     type Prompt = ScriptedPrompt;
     type Reporter = RecordingReporter;
+    type Styler = FakeStyler;
     type Progress = RecordingProgress;
     type Transactions = MemTransactions;
     type Queue = MemQueue;
@@ -372,6 +392,9 @@ impl Platform for TestPlatform {
     }
     fn reporter(&self) -> &Self::Reporter {
         &self.reporter
+    }
+    fn styler(&self) -> &Self::Styler {
+        &self.styler
     }
     fn progress(&self) -> &Self::Progress {
         &self.progress

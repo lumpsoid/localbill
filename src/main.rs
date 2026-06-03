@@ -6,6 +6,7 @@ mod error;
 mod invoice;
 mod ports;
 mod sanitize;
+mod schema_form;
 #[cfg(test)]
 mod testing;
 

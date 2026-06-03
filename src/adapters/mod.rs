@@ -12,4 +12,5 @@ pub mod prompt;
 pub mod remote_queue;
 pub mod reporter;
 pub mod store;
+pub mod styler;
 pub mod vcs;

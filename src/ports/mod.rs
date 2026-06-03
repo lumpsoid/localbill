@@ -75,6 +75,31 @@ pub trait Reporter {
     fn status(&self, msg: &str);
 }
 
+/// Semantic styles for interactive terminal output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Style {
+    /// Section header / banner.
+    Header,
+    /// A field name.
+    Field,
+    /// Secondary / hint text.
+    Hint,
+    /// The input caret.
+    Prompt,
+    /// Confirmation of accepted input.
+    Success,
+    /// A validation error.
+    Error,
+}
+
+/// Applies terminal styling to text. Implementations **must** return `text`
+/// unchanged when output is not a terminal, so piped/redirected output stays
+/// clean. Callers send the returned string through [`Reporter`]/[`Prompt`], so
+/// colour stays behind the adapter boundary like every other capability.
+pub trait Styler {
+    fn paint(&self, style: Style, text: &str) -> String;
+}
+
 /// A live, multi-line phase checklist with one animated ("spinning") phase.
 ///
 /// Pure terminal eye-candy: the production adapter draws a fidget-spinner and
@@ -159,6 +184,7 @@ pub trait Platform {
     type Clock: Clock;
     type Prompt: Prompt;
     type Reporter: Reporter;
+    type Styler: Styler;
     type Progress: Progress;
     type Transactions: TransactionStore;
     type Queue: QueueStore;
@@ -173,6 +199,7 @@ pub trait Platform {
     fn clock(&self) -> &Self::Clock;
     fn prompt(&self) -> &Self::Prompt;
     fn reporter(&self) -> &Self::Reporter;
+    fn styler(&self) -> &Self::Styler;
     fn progress(&self) -> &Self::Progress;
     fn transactions(&self) -> &Self::Transactions;
     fn queue(&self) -> &Self::Queue;

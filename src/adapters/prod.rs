@@ -9,6 +9,7 @@ use crate::adapters::prompt::StdinPrompt;
 use crate::adapters::remote_queue::HttpRemoteQueue;
 use crate::adapters::reporter::StdReporter;
 use crate::adapters::store::{FileFailedLog, FileSchemaSource, FsQueueStore, FsTransactionStore};
+use crate::adapters::styler::CrosstermStyler;
 use crate::adapters::vcs::GitCli;
 use crate::config::Config;
 use crate::ports::Platform;
@@ -20,6 +21,7 @@ pub struct ProdPlatform {
     clock: DateClock,
     prompt: StdinPrompt,
     reporter: StdReporter,
+    styler: CrosstermStyler,
     progress: SpinnerProgress,
     transactions: FsTransactionStore,
     queue: FsQueueStore,
@@ -37,6 +39,7 @@ impl ProdPlatform {
             clock: DateClock,
             prompt: StdinPrompt,
             reporter: StdReporter,
+            styler: CrosstermStyler,
             progress: SpinnerProgress,
             transactions: FsTransactionStore::new(cfg.transaction_dir.clone()),
             queue: FsQueueStore::new(cfg.queue_file.clone()),
@@ -55,6 +58,7 @@ impl Platform for ProdPlatform {
     type Clock = DateClock;
     type Prompt = StdinPrompt;
     type Reporter = StdReporter;
+    type Styler = CrosstermStyler;
     type Progress = SpinnerProgress;
     type Transactions = FsTransactionStore;
     type Queue = FsQueueStore;
@@ -82,6 +86,9 @@ impl Platform for ProdPlatform {
     }
     fn reporter(&self) -> &Self::Reporter {
         &self.reporter
+    }
+    fn styler(&self) -> &Self::Styler {
+        &self.styler
     }
     fn progress(&self) -> &Self::Progress {
         &self.progress
