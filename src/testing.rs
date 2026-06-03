@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::ports::{
-    Clock, Env, FailedLog, Http, Network, Platform, Progress, ProgressTask, Prompt, QueueStore,
-    RemoteQueue, RemoteReachable, Reporter, SchemaSource, StoredDoc, Style, Styler,
+    Clock, Env, EnvVar, FailedLog, Http, Network, Platform, Progress, ProgressTask, Prompt,
+    QueueStore, RemoteQueue, RemoteReachable, Reporter, SchemaSource, StoredDoc, Style, Styler,
     TransactionStore, Vcs,
 };
 
@@ -191,14 +191,14 @@ impl ProgressTask for NoopTask {
 #[derive(Default)]
 pub struct MapEnv(pub HashMap<String, String>);
 impl MapEnv {
-    pub fn set(mut self, key: &str, val: &str) -> Self {
-        self.0.insert(key.into(), val.into());
+    pub fn set(mut self, key: EnvVar, val: &str) -> Self {
+        self.0.insert(key.as_str().into(), val.into());
         self
     }
 }
 impl Env for MapEnv {
-    fn var(&self, key: &str) -> Option<String> {
-        self.0.get(key).cloned()
+    fn var(&self, key: EnvVar) -> Option<String> {
+        self.0.get(key.as_str()).cloned()
     }
 }
 
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn config_env_overrides_file() {
-        let env = MapEnv::default().set("TRANSACTION_DIR", "/from/env");
+        let env = MapEnv::default().set(EnvVar::TransactionDir, "/from/env");
         let file = "transaction_dir: /from/file\n";
         let cfg = config::parse(Some(file), &env).unwrap();
         assert_eq!(cfg.transaction_dir, PathBuf::from("/from/env"));
@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn config_falls_back_to_file_then_default() {
-        let env = MapEnv::default().set("HOME", "/home/u");
+        let env = MapEnv::default().set(EnvVar::Home, "/home/u");
         let file = "transaction_dir: /from/file\n";
         let cfg = config::parse(Some(file), &env).unwrap();
         assert_eq!(cfg.transaction_dir, PathBuf::from("/from/file"));

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::ports::Env;
+use crate::ports::{Env, EnvVar};
 
 pub struct Config {
     pub transaction_dir: PathBuf,
@@ -73,7 +73,7 @@ pub fn load<E: Env>(override_path: Option<&Path>, env: &E) -> Result<Config> {
         Some(p) => p.to_path_buf(),
         None => {
             let xdg = env
-                .var("XDG_CONFIG_HOME")
+                .var(EnvVar::XdgConfigHome)
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home_dir(env).join(".config"));
             xdg.join("localbills").join("config.yaml")
@@ -103,44 +103,45 @@ pub fn parse<E: Env>(file_text: Option<&str>, env: &E) -> Result<Config> {
     };
 
     // Helper: env var first, then YAML file value.
-    let env_or = |env_key: &str, file_val: Option<String>| -> Option<String> {
+    let env_or = |env_key: EnvVar, file_val: Option<String>| -> Option<String> {
         env.var(env_key).or(file_val)
     };
 
     let home = home_dir(env);
     let xdg_data = env
-        .var("XDG_DATA_HOME")
+        .var(EnvVar::XdgDataHome)
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".local").join("share"));
 
-    let transaction_dir = env_or("TRANSACTION_DIR", file.transaction_dir)
+    let transaction_dir = env_or(EnvVar::TransactionDir, file.transaction_dir)
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join("localbills-data"));
 
-    let data_dir = env_or("DATA_DIR", file.data_dir)
+    let data_dir = env_or(EnvVar::DataDir, file.data_dir)
         .map(PathBuf::from)
         .unwrap_or_else(|| transaction_dir.clone());
 
-    let queue_file = env_or("QUEUE_FILE", file.queue_file)
+    let queue_file = env_or(EnvVar::QueueFile, file.queue_file)
         .map(PathBuf::from)
         .unwrap_or_else(|| xdg_data.join("localbills").join("queue.txt"));
 
-    let failed_links_file = env_or("FAILED_LINKS", file.failed_links_file)
+    let failed_links_file = env_or(EnvVar::FailedLinks, file.failed_links_file)
         .map(PathBuf::from)
         .unwrap_or_else(|| xdg_data.join("localbills").join("failed.txt"));
 
-    let api_host = env_or("API_HOST", file.api.host).unwrap_or_else(|| "192.168.1.2".to_string());
+    let api_host =
+        env_or(EnvVar::ApiHost, file.api.host).unwrap_or_else(|| "192.168.1.2".to_string());
 
     let api_port = env
-        .var("API_PORT")
+        .var(EnvVar::ApiPort)
         .and_then(|s| s.parse().ok())
         .or(file.api.port)
         .unwrap_or(8087u16);
 
     let api_endpoint =
-        env_or("API_ENDPOINT", file.api.endpoint).unwrap_or_else(|| "/queue".to_string());
+        env_or(EnvVar::ApiEndpoint, file.api.endpoint).unwrap_or_else(|| "/queue".to_string());
 
-    let schema_file = env_or("SCHEMA_FILE", file.schema_file).map(PathBuf::from);
+    let schema_file = env_or(EnvVar::SchemaFile, file.schema_file).map(PathBuf::from);
 
     Ok(Config {
         transaction_dir,
@@ -155,7 +156,7 @@ pub fn parse<E: Env>(file_text: Option<&str>, env: &E) -> Result<Config> {
 }
 
 fn home_dir<E: Env>(env: &E) -> PathBuf {
-    env.var("HOME")
+    env.var(EnvVar::Home)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }

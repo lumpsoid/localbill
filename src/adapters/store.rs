@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::ports::{FailedLog, QueueStore, SchemaSource, StoredDoc, TransactionStore};
+use crate::ports::{EnvVar, FailedLog, QueueStore, SchemaSource, StoredDoc, TransactionStore};
 
 // ── Transaction store ───────────────────────────────────────────────────────────
 
@@ -162,11 +162,11 @@ impl FileSchemaSource {
 impl SchemaSource for FileSchemaSource {
     fn load(&self) -> Result<String> {
         let path = self.path.as_ref().ok_or_else(|| {
-            Error::Config(
+            Error::Config(format!(
                 "schema_file is not configured; set schema_file in config.yaml \
-                 (or the SCHEMA_FILE environment variable)"
-                    .to_string(),
-            )
+                 (or the {} environment variable)",
+                EnvVar::SchemaFile.as_str()
+            ))
         })?;
         fs::read_to_string(path)
             .map_err(|e| Error::Config(format!("Cannot read schema file {}: {e}", path.display())))

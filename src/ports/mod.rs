@@ -122,9 +122,48 @@ pub trait ProgressTask {
     fn finish(self);
 }
 
+/// Every environment variable the application reads.
+///
+/// Closing the set as an enum (instead of free-form `&str` keys) makes an
+/// unlisted or mistyped variable impossible to look up — the compiler rejects
+/// it, and the `as_str` `match` forces every variant to have exactly one name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvVar {
+    XdgConfigHome,
+    XdgDataHome,
+    Home,
+    TransactionDir,
+    DataDir,
+    QueueFile,
+    FailedLinks,
+    ApiHost,
+    ApiPort,
+    ApiEndpoint,
+    SchemaFile,
+}
+
+impl EnvVar {
+    /// The literal name as it appears in the process environment.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            EnvVar::XdgConfigHome => "XDG_CONFIG_HOME",
+            EnvVar::XdgDataHome => "XDG_DATA_HOME",
+            EnvVar::Home => "HOME",
+            EnvVar::TransactionDir => "TRANSACTION_DIR",
+            EnvVar::DataDir => "DATA_DIR",
+            EnvVar::QueueFile => "QUEUE_FILE",
+            EnvVar::FailedLinks => "FAILED_LINKS",
+            EnvVar::ApiHost => "API_HOST",
+            EnvVar::ApiPort => "API_PORT",
+            EnvVar::ApiEndpoint => "API_ENDPOINT",
+            EnvVar::SchemaFile => "SCHEMA_FILE",
+        }
+    }
+}
+
 /// Process environment lookup (used by config loading).
 pub trait Env {
-    fn var(&self, key: &str) -> Option<String>;
+    fn var(&self, key: EnvVar) -> Option<String>;
 }
 
 // ── Domain repositories ─────────────────────────────────────────────────────────
