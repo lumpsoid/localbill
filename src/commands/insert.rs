@@ -62,56 +62,95 @@ fn parse_url_list(contents: &str) -> LoadedUrls {
 pub fn run<P: Platform>(args: InsertArgs, config: &Config, p: &P) -> Result<()> {
     let reporter = p.reporter();
 
+    let urls = match resolve_urls(&args, p)? {
+        Some(urls) => urls,
+        None => return Ok(()), // a file was given but held no URLs — nothing to do
+    };
+    let batch = args.file.is_some();
+
+    // The whole flow: parse + write every URL, then one git sync at the end.
+    // A single URL is just a batch of one — the pipeline never interleaves
+    // parse and sync.
+    let outcomes = run_batch(&urls, &args, config, p);
+    reporter.out(&render_report(&outcomes, batch));
+
+    let failed = outcomes.iter().filter(|o| o.is_failure()).count();
+    if failed > 0 {
+        let msg = if batch {
+            format!("{failed} URL(s) failed to process")
+        } else {
+            "URL failed to process".to_string()
+        };
+        return Err(Error::Parse(msg));
+    }
+    Ok(())
+}
+
+/// Resolve the URLs this invocation will process: the lines of `--file`, or the
+/// single positional URL. `Ok(None)` means a file was given but held no usable
+/// URLs — the caller should stop without error.
+fn resolve_urls<P: Platform>(args: &InsertArgs, p: &P) -> Result<Option<Vec<String>>> {
     if let Some(file_path) = &args.file {
         // The `--file` path is user-supplied and arbitrary, so it is read
         // directly here rather than through a store (the one remaining direct
         // read in the command layer).
         let contents = fs::read_to_string(file_path).map_err(Error::Io)?;
-        let urls = match parse_url_list(&contents) {
+        match parse_url_list(&contents) {
             LoadedUrls::Empty => {
-                reporter.status("No URLs found in file.");
-                return Ok(());
+                p.reporter().status("No URLs found in file.");
+                Ok(None)
             }
-            LoadedUrls::Found(urls) => urls,
-        };
-
-        let mut outcomes = Vec::with_capacity(urls.len());
-        for url in &urls {
-            match run_one(url, &args, config, p) {
-                Ok(outcome) => outcomes.push(outcome),
-                Err(e) => {
-                    reporter.status(&format!("Error processing {url}: {e}"));
-                    outcomes.push(Outcome::Failed { url: url.clone() });
-                }
-            }
+            LoadedUrls::Found(urls) => Ok(Some(urls)),
         }
-
-        reporter.out(&render_report(&outcomes, /*batch=*/ true));
-        let failed = outcomes.iter().filter(|o| o.is_failure()).count();
-        if failed > 0 {
-            return Err(Error::Parse(format!("{failed} URL(s) failed to process")));
-        }
-        Ok(())
     } else {
         let url = args.url.as_deref().unwrap_or("").trim().to_string();
-        let outcome = run_one(&url, &args, config, p)?;
-        reporter.out(&render_report(
-            std::slice::from_ref(&outcome),
-            /*batch=*/ false,
-        ));
-        if outcome.is_failure() {
-            return Err(Error::Parse("URL failed to process".to_string()));
-        }
-        Ok(())
+        Ok(Some(vec![url]))
     }
 }
 
-pub fn run_one<P: Platform>(
-    url: &str,
+/// Parse + write every URL (no per-URL sync), then run a single git sync for the
+/// whole set. The unit of work shared by `insert` and `queue process`: many
+/// parses, then one sync — never parse/sync interleaved.
+pub fn run_batch<P: Platform>(
+    urls: &[String],
     args: &InsertArgs,
     config: &Config,
     p: &P,
-) -> Result<Outcome> {
+) -> Vec<Outcome> {
+    let reporter = p.reporter();
+    let mut outcomes = Vec::with_capacity(urls.len());
+    for url in urls {
+        match run_one(url, args, p) {
+            Ok(outcome) => outcomes.push(outcome),
+            Err(e) => {
+                reporter.status(&format!("Error processing {url}: {e}"));
+                outcomes.push(Outcome::Failed { url: url.clone() });
+            }
+        }
+    }
+    run_sync(&outcomes, args.no_sync, config, p);
+    outcomes
+}
+
+/// Carry out the one git operation a finished batch warrants (per [`SyncPlan`]).
+fn run_sync<P: Platform>(outcomes: &[Outcome], no_sync: bool, config: &Config, p: &P) {
+    match SyncPlan::for_outcomes(outcomes, no_sync) {
+        SyncPlan::Push => {
+            if let Some(e) = sync_data(config, p, /*push=*/ true, None) {
+                p.reporter().status(&format!("Warning: sync failed: {e}"));
+            }
+        }
+        // Best-effort: commit whatever is pending locally while offline.
+        SyncPlan::CommitOnly => {
+            let _ = sync_data(config, p, /*push=*/ false, Some("Offline"));
+        }
+        SyncPlan::Nothing => {}
+    }
+}
+
+/// Parse + write one URL. Performs no git sync — that is the batch's job (see
+/// [`run_sync`]) so the flow stays parse-then-sync, never interleaved.
+pub fn run_one<P: Platform>(url: &str, args: &InsertArgs, p: &P) -> Result<Outcome> {
     if url.is_empty() {
         return Err(Error::Parse("URL must not be empty".to_string()));
     }
@@ -126,15 +165,6 @@ pub fn run_one<P: Platform>(
     // ── Offline → queue ───────────────────────────────────────────────────────
     if !p.network().has_internet() {
         p.queue().enqueue(url)?;
-        // Best-effort offline sync (commits any pending local changes).
-        let _ = crate::commands::sync::commit_and_push(
-            &config.data_dir,
-            Some("Offline"),
-            None,
-            /*push=*/ false,
-            /*quiet=*/ true,
-            p,
-        );
         return Ok(Outcome::Queued {
             url: url.to_string(),
         });
@@ -170,26 +200,7 @@ pub fn run_one<P: Platform>(
     // ── Write ─────────────────────────────────────────────────────────────────
     let written = mapper::write_invoice(&invoice, p.transactions())?;
     task.complete(); // Save ✓
-
-    // ── Sync (quiet — its line output would corrupt the checklist) ────────────
-    let mut sync_err = None;
-    if !args.no_sync {
-        sync_err = crate::commands::sync::commit_and_push(
-            &config.data_dir,
-            None,
-            None,
-            /*push=*/ true,
-            /*quiet=*/ true,
-            p,
-        )
-        .err();
-        task.complete(); // Sync ✓
-    }
-
-    task.finish(); // erase the checklist before any report/warning output
-    if let Some(e) = sync_err {
-        p.reporter().status(&format!("Warning: sync failed: {e}"));
-    }
+    task.finish();
 
     Ok(Outcome::Saved {
         date: invoice.date,
@@ -200,17 +211,63 @@ pub fn run_one<P: Platform>(
     })
 }
 
+// ── Sync decision (pure) ────────────────────────────────────────────────────────
+
+/// The one git operation a finished batch warrants. The single home for the
+/// sync decision — derived purely from the outcomes plus the `--no-sync` opt-out.
+enum SyncPlan {
+    /// Invoices were written and we're online: commit and push.
+    Push,
+    /// URLs were queued offline: commit pending changes without pushing.
+    CommitOnly,
+    /// Nothing to commit.
+    Nothing,
+}
+
+impl SyncPlan {
+    fn for_outcomes(outcomes: &[Outcome], no_sync: bool) -> Self {
+        let any = |pred: fn(&Outcome) -> bool| outcomes.iter().any(pred);
+        if no_sync {
+            SyncPlan::Nothing
+        } else if any(|o| matches!(o, Outcome::Saved { .. })) {
+            SyncPlan::Push
+        } else if any(|o| matches!(o, Outcome::Queued { .. })) {
+            SyncPlan::CommitOnly
+        } else {
+            SyncPlan::Nothing
+        }
+    }
+}
+
 // ── Report rendering (pure) ─────────────────────────────────────────────────────
 
-/// The phase labels shown in the live checklist for this invocation.
+/// The phase labels shown in the live checklist for one URL. Sync is a
+/// batch-level step (see [`run_sync`]), so it never appears here.
 fn run_phases(args: &InsertArgs) -> Vec<&'static str> {
     if args.dry_run {
         vec!["Parse invoice"]
-    } else if args.no_sync {
-        vec!["Parse invoice", "Save line items"]
     } else {
-        vec!["Parse invoice", "Save line items", "Sync to git"]
+        vec!["Parse invoice", "Save line items"]
     }
+}
+
+/// Commit (and optionally push) `data_dir` quietly. Returns any error. Pure
+/// plumbing — the decision to call it lives in [`SyncPlan`].
+fn sync_data<P: Platform>(
+    config: &Config,
+    p: &P,
+    push: bool,
+    message: Option<&str>,
+) -> Option<Error> {
+    crate::commands::sync::commit_and_push(
+        &config.data_dir,
+        message,
+        None,
+        push,
+        /*quiet=*/ true,
+        p,
+    )
+    .err()
 }
 
 /// Build the final report: a minimal one-liner per URL, written invoices first
@@ -389,6 +446,48 @@ mod tests {
             *lines.last().unwrap(),
             "Processed 3 · 1 saved · 1 skipped · 1 failed"
         );
+    }
+
+    #[test]
+    fn sync_plan_pushes_when_anything_written() {
+        let outcomes = vec![
+            Outcome::Failed { url: "x".into() },
+            saved("2024-03-15T14:30:00", "Maxi"),
+        ];
+        assert!(matches!(
+            SyncPlan::for_outcomes(&outcomes, /*no_sync=*/ false),
+            SyncPlan::Push
+        ));
+    }
+
+    #[test]
+    fn sync_plan_commits_only_when_queued_offline() {
+        let outcomes = vec![Outcome::Queued { url: "x".into() }];
+        assert!(matches!(
+            SyncPlan::for_outcomes(&outcomes, false),
+            SyncPlan::CommitOnly
+        ));
+    }
+
+    #[test]
+    fn sync_plan_does_nothing_without_writes_or_queue() {
+        let outcomes = vec![
+            Outcome::Skipped { url: "x".into() },
+            Outcome::Failed { url: "y".into() },
+        ];
+        assert!(matches!(
+            SyncPlan::for_outcomes(&outcomes, false),
+            SyncPlan::Nothing
+        ));
+    }
+
+    #[test]
+    fn sync_plan_respects_no_sync() {
+        let outcomes = vec![saved("2024-03-15T14:30:00", "Maxi")];
+        assert!(matches!(
+            SyncPlan::for_outcomes(&outcomes, /*no_sync=*/ true),
+            SyncPlan::Nothing
+        ));
     }
 
     #[test]

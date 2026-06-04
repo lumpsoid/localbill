@@ -121,7 +121,9 @@ fn process_remote<P: Platform>(config: &Config, no_sync: bool, p: &P) -> Result<
     Ok(())
 }
 
-/// Insert each URL in turn, returning the (succeeded, failed) URL lists.
+/// Insert all URLs (parse + write each, then one git sync), returning the
+/// (succeeded, failed) URL lists. Delegates the parse-then-sync flow to
+/// `insert::run_batch` so queue processing syncs once, not per URL.
 fn process_urls<P: Platform>(
     urls: &[String],
     no_sync: bool,
@@ -129,31 +131,25 @@ fn process_urls<P: Platform>(
     p: &P,
 ) -> (Vec<String>, Vec<String>) {
     let reporter = p.reporter();
+    let args = InsertArgs {
+        url: None,
+        file: None,
+        dry_run: false,
+        no_sync,
+        force: false,
+    };
+
+    let outcomes = crate::commands::insert::run_batch(urls, &args, config, p);
+
     let mut succeeded: Vec<String> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
-
-    for url in urls {
-        reporter.status(&format!("  {url} … "));
-        let args = InsertArgs {
-            url: Some(url.clone()),
-            file: None,
-            dry_run: false,
-            no_sync,
-            force: false,
-        };
-        match crate::commands::insert::run_one(url, &args, config, p) {
-            Ok(outcome) if !outcome.is_failure() => {
-                reporter.status("ok");
-                succeeded.push(url.clone());
-            }
-            Ok(_) => {
-                reporter.status("FAILED");
-                failed.push(url.clone());
-            }
-            Err(e) => {
-                reporter.status(&format!("FAILED: {e}"));
-                failed.push(url.clone());
-            }
+    for (url, outcome) in urls.iter().zip(&outcomes) {
+        if outcome.is_failure() {
+            reporter.status(&format!("  {url} … FAILED"));
+            failed.push(url.clone());
+        } else {
+            reporter.status(&format!("  {url} … ok"));
+            succeeded.push(url.clone());
         }
     }
 

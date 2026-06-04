@@ -524,9 +524,8 @@ mod tests {
             network: ToggleNetwork(false),
             ..Default::default()
         };
-        let cfg = test_config();
 
-        let outcome = insert::run_one("http://x/1", &insert_args(), &cfg, &tp).unwrap();
+        let outcome = insert::run_one("http://x/1", &insert_args(), &tp).unwrap();
 
         assert!(matches!(outcome, insert::Outcome::Queued { .. }));
         assert_eq!(tp.queue.urls.borrow().as_slice(), ["http://x/1"]);
@@ -542,9 +541,8 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let cfg = test_config();
 
-        let outcome = insert::run_one("http://x/1", &insert_args(), &cfg, &tp).unwrap();
+        let outcome = insert::run_one("http://x/1", &insert_args(), &tp).unwrap();
 
         // No new doc written.
         assert!(matches!(outcome, insert::Outcome::Skipped { .. }));
@@ -557,15 +555,14 @@ mod tests {
             http: FakeHttp::with_pages(vec![invoice_page(true)], vec![items_json()]),
             ..Default::default()
         };
-        let cfg = test_config();
 
-        let outcome = insert::run_one("http://x/1", &insert_args(), &cfg, &tp).unwrap();
+        let outcome = insert::run_one("http://x/1", &insert_args(), &tp).unwrap();
 
         assert!(matches!(outcome, insert::Outcome::Saved { files: 1, .. }));
         let docs = tp.transactions.docs.borrow();
         assert_eq!(docs.len(), 1);
         assert!(docs[0].content.contains("name: \"Mleko\""));
-        // no_sync=true, so the checklist covered parse + save only.
+        // Sync is a batch-level step, so the per-URL checklist is parse + save only.
         assert_eq!(
             tp.progress.last_phases(),
             ["Parse invoice", "Save line items"]
