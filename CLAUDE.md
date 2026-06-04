@@ -59,6 +59,20 @@ Every external system sits behind a capability trait in `src/ports/mod.rs` (`Htt
 - `is_duplicate` (in `insert.rs`) detects re-inserts by a literal substring search for the URL across every `.md` doc from the `TransactionStore`.
 - When adding a new external dependency, add a port in `ports/mod.rs`, a production adapter in `adapters/`, a fake in `testing.rs`, and a field/accessor on both `ProdPlatform` and `TestPlatform`.
 
+## Commit style
+
+```
+type(scope): target change
+brief description
+```
+
+- **type**: one of `feat`, `refactor`, `fix`, `chore`, `test`.
+- **scope**: the feature/area changed, mostly mirroring the directory — e.g. a command name (`add`, `insert`, `sync`, `queue`), `parser`, `mapper`, `config`.
+- **target change**: short imperative subject line.
+- **brief description**: optional body line(s) for the "why" when the subject isn't self-explanatory.
+
+Examples (from history): `feat(add): add schema form parser for add command`, `refactor: use EnvVar enum instead of free form strings`. Scope may be omitted when the change is repo-wide.
+
 ## Legacy / non-Rust assets
 
 - `scripts/` is the **original Python/shell/Perl implementation** (`parser/rs_parser.py`, `mapper/`, `sanitize/sanitize_rs.pl`, etc.) that the Rust binary replaces, plus dated one-off data migrations under `scripts/migrate/` (e.g. SQLite→YAML, date→ISO). Reference only — not built or invoked by the CLI.
