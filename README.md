@@ -176,6 +176,61 @@ git remote add origin <your-remote-url>
 localbill [--config <PATH>] <COMMAND>
 ```
 
+### `add` — create an entry by hand
+
+Builds a single transaction `.md` file from field values, validated against the configured
+schema (`SCHEMA_FILE`). Run with no argument to be **prompted** field-by-field, or pass a
+**JSON object** to fill every field in one shot — handy for scripting.
+
+```bash
+# Interactive: walks the schema and prompts per field
+localbill add
+
+# Non-interactive: pass a JSON object of field values
+localbill add '{
+  "date": "2026-06-05T10:00:00",
+  "name": "Milk",
+  "retailer": "Shop",
+  "quantity": 1,
+  "unit_price": 1.5,
+  "price_total": 1.5,
+  "currency": "RSD",
+  "country": "Serbia"
+}'
+
+# Read the JSON from stdin with `-` (pipe or heredoc)
+echo '{"date":"2026-06-05T10:00:00","name":"Bread","retailer":"Shop","quantity":2,"unit_price":1,"price_total":2,"currency":"EUR","country":"Serbia"}' \
+  | localbill add -
+```
+
+The JSON is validated against the schema before anything is written. If a field is missing,
+the wrong type, or breaks a constraint, every problem is printed and the command exits
+non-zero **without creating a file**:
+
+```bash
+$ localbill add '{"name":"x"}'
+<json> → : "date" is a required property
+<json> → : "currency" is a required property
+...
+error: 7 validation error(s)
+```
+
+The filename is derived from the `date` and `name` fields (`{compactDate}-{slug}.md`), with
+`-01`, `-02`, … suffixes on collision. Fields are written in schema order regardless of the
+order they appear in the JSON.
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Print the generated file to stdout; do not write it |
+| `--no-sync` | Skip the automatic Git sync after writing |
+
+> **Note:** `format: datetime` in the schema is a custom hint the validator does not enforce,
+> so the *shape* of `date` is not checked in JSON mode — supply a valid ISO-8601 string.
+
+---
+
 ### `insert` — parse and save an invoice
 
 Fetches the invoice page, parses every line item, and writes one `.md` file per item into `TRANSACTION_DIR`.
