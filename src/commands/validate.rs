@@ -93,7 +93,7 @@ pub fn run<P: Platform>(args: ValidateArgs, config: &Config, p: &P) -> Result<()
 
 // ── Schema compilation ──────────────────────────────────────────────────────────
 
-fn compile_schema(content: &str) -> Result<jsonschema::Validator> {
+pub(crate) fn compile_schema(content: &str) -> Result<jsonschema::Validator> {
     let schema_json = yaml_to_json(content)?;
     jsonschema::validator_for(&schema_json)
         .map_err(|e| Error::Config(format!("Invalid JSON Schema: {e}")))
@@ -138,7 +138,7 @@ fn extract_front_matter<'a>(text: &'a str, path: &Path) -> Result<&'a str> {
 }
 
 /// Parse a YAML string into a `serde_json::Value`.
-fn yaml_to_json(yaml: &str) -> Result<serde_json::Value> {
+pub(crate) fn yaml_to_json(yaml: &str) -> Result<serde_json::Value> {
     let yaml_val: serde_yaml::Value = serde_yaml::from_str(yaml)?;
     serde_json::to_value(yaml_val).map_err(Error::Json)
 }

@@ -45,6 +45,9 @@ pub enum Command {
 
 #[derive(Args)]
 pub struct AddArgs {
+    /// JSON object of field values; reads stdin when set to `-`. Omit for interactive mode.
+    pub json: Option<String>,
+
     /// Print the generated file to stdout; do not write to disk
     #[arg(long)]
     pub dry_run: bool,

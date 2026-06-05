@@ -65,6 +65,8 @@ pub trait Clock {
 /// Interactive line input (used by the `add` command).
 pub trait Prompt {
     fn read_line(&self, prompt: &str) -> Result<String>;
+    /// Read the entire stdin to a `String` (used by `add` when given `-`).
+    fn read_all(&self) -> Result<String>;
 }
 
 /// Sink for user-facing output, replacing direct `println!`/`eprintln!`.

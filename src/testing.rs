@@ -116,18 +116,31 @@ impl Clock for FixedClock {
 #[derive(Default)]
 pub struct ScriptedPrompt {
     pub answers: RefCell<VecDeque<String>>,
+    /// Canned stdin payload returned by `read_all` (used for the `add -` path).
+    pub stdin: String,
 }
 impl ScriptedPrompt {
     /// Build a prompt that replays `answers` in order.
     pub fn with(answers: Vec<&str>) -> Self {
         Self {
             answers: RefCell::new(answers.into_iter().map(String::from).collect()),
+            stdin: String::new(),
+        }
+    }
+    /// Build a prompt whose `read_all` returns `stdin`.
+    pub fn with_stdin(stdin: &str) -> Self {
+        Self {
+            stdin: stdin.to_string(),
+            ..Self::default()
         }
     }
 }
 impl Prompt for ScriptedPrompt {
     fn read_line(&self, _prompt: &str) -> Result<String> {
         Ok(self.answers.borrow_mut().pop_front().unwrap_or_default())
+    }
+    fn read_all(&self) -> Result<String> {
+        Ok(self.stdin.clone())
     }
 }
 

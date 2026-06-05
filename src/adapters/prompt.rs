@@ -1,6 +1,6 @@
 //! Interactive line input from stdin.
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 
 use crate::error::{Error, Result};
 use crate::ports::Prompt;
@@ -14,5 +14,11 @@ impl Prompt for StdinPrompt {
         let mut line = String::new();
         io::stdin().read_line(&mut line).map_err(Error::Io)?;
         Ok(line.trim().to_string())
+    }
+
+    fn read_all(&self) -> Result<String> {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf).map_err(Error::Io)?;
+        Ok(buf)
     }
 }
