@@ -98,7 +98,7 @@ pub fn render_markdown(
 
 /// Convert `"YYYY-MM-DDTHH:MM:SS"` → `"YYYYMMDDTHHMMSS"` for use in filenames.
 pub fn compact_date(date: &str) -> String {
-    date.replace(['-', ':'], "")
+    date.trim_end_matches('Z').replace(['-', ':'], "")
 }
 
 /// Convert an arbitrary string into a lowercase, ASCII-only, hyphen-separated slug.
@@ -158,5 +158,10 @@ mod tests {
     #[test]
     fn compact_date_format() {
         assert_eq!(compact_date("2024-03-15T14:30:00"), "20240315T143000");
+    }
+
+    #[test]
+    fn compact_date_strips_utc_z() {
+        assert_eq!(compact_date("2024-03-15T14:30:00Z"), "20240315T143000");
     }
 }
