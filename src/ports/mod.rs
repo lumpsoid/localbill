@@ -130,6 +130,10 @@ pub trait Progress {
     /// the animation and erases the block. Empty `rows` (or non-TTY output)
     /// yields a no-op list.
     fn start(&self, rows: &[String]) -> Self::List;
+    /// The interactive terminal's width in columns, or `None` when output is not
+    /// a TTY / the width is unknown. Callers use it to keep each row on a single
+    /// physical line (a wrapped row breaks the in-place redraw).
+    fn width(&self) -> Option<usize>;
 }
 
 /// Handle to an in-progress [`Progress`] list.

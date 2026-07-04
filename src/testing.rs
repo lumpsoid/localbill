@@ -179,6 +179,8 @@ impl Reporter for RecordingReporter {
 #[derive(Default)]
 pub struct RecordingProgress {
     pub started: RefCell<Vec<Vec<String>>>,
+    /// Fixed width reported by `width()` (None = unknown, as when not a TTY).
+    pub width: Option<usize>,
 }
 impl RecordingProgress {
     /// The rows of the most recent `start` (empty if none).
@@ -188,6 +190,9 @@ impl RecordingProgress {
 }
 impl Progress for RecordingProgress {
     type List = NoopList;
+    fn width(&self) -> Option<usize> {
+        self.width
+    }
     fn start(&self, rows: &[String]) -> NoopList {
         self.started.borrow_mut().push(rows.to_vec());
         NoopList

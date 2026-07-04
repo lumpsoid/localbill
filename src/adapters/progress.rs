@@ -27,10 +27,25 @@ const CYAN: &str = "\x1b[36m";
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
+/// The terminal width in columns, or `None` when stderr is not a TTY / the size
+/// is unknown. Uses crossterm's ioctl-backed probe (reliable on Android/Termux).
+fn detect_width() -> Option<usize> {
+    if !std::io::stderr().is_terminal() {
+        return None;
+    }
+    crossterm::terminal::size()
+        .ok()
+        .map(|(cols, _)| cols as usize)
+}
+
 pub struct SpinnerProgress;
 
 impl Progress for SpinnerProgress {
     type List = SpinnerList;
+
+    fn width(&self) -> Option<usize> {
+        detect_width()
+    }
 
     fn start(&self, rows: &[String]) -> SpinnerList {
         // No animation when there is nothing to show or output is redirected.
@@ -47,6 +62,7 @@ impl Progress for SpinnerProgress {
                     .collect(),
             ),
             len: rows.len(),
+            width: detect_width(),
             active: AtomicUsize::new(NONE),
             stop: AtomicBool::new(false),
         });
@@ -73,6 +89,8 @@ struct Shared {
     rows: Mutex<Vec<RowCell>>,
     /// Number of rows — fixed for the block's lifetime (for cursor math).
     len: usize,
+    /// Terminal width for clamping rows to one physical line, if known.
+    width: Option<usize>,
     /// Index of the spinning row, or [`NONE`].
     active: AtomicUsize,
     stop: AtomicBool,
@@ -151,6 +169,25 @@ fn glyph(state: RowState) -> (&'static str, &'static str) {
     }
 }
 
+/// Truncate `label` so it fits `budget` display columns, appending `…` when cut.
+/// A row must never exceed the terminal width, or it wraps and the in-place
+/// redraw (which counts logical, not physical, lines) prints new lines instead
+/// of overwriting.
+fn fit(label: &str, budget: Option<usize>) -> String {
+    match budget {
+        Some(b) if label.chars().count() > b => {
+            if b == 0 {
+                String::new()
+            } else {
+                let mut s: String = label.chars().take(b - 1).collect();
+                s.push('…');
+                s
+            }
+        }
+        _ => label.to_string(),
+    }
+}
+
 /// The worker loop: redraw the block once per tick until told to stop. The
 /// stderr lock is taken per tick (not held) so the driving thread can interleave
 /// if it must.
@@ -169,16 +206,22 @@ fn animate(shared: &Shared) {
         if let Ok(rows) = shared.rows.lock() {
             for (i, row) in rows.iter().enumerate() {
                 let _ = write!(err, "\r\x1b[K");
+                // Budget = width minus the row's visible prefix (indent + marker
+                // + space), so the whole line stays within one physical row.
+                let budget = |prefix: usize| shared.width.map(|w| w.saturating_sub(prefix));
                 match row.done {
                     Some(state) => {
                         let (colour, mark) = glyph(state);
-                        let _ = writeln!(err, "  {colour}{mark}{RESET} {}", row.label);
+                        let label = fit(&row.label, budget(5));
+                        let _ = writeln!(err, "  {colour}{mark}{RESET} {label}");
                     }
                     None if i == active => {
-                        let _ = writeln!(err, "  {CYAN}{}{RESET} {}", FRAMES[frame], row.label);
+                        let label = fit(&row.label, budget(6));
+                        let _ = writeln!(err, "  {CYAN}{}{RESET} {label}", FRAMES[frame]);
                     }
                     None => {
-                        let _ = writeln!(err, "  {DIM}☐  {RESET} {}", row.label);
+                        let label = fit(&row.label, budget(6));
+                        let _ = writeln!(err, "  {DIM}☐  {RESET} {label}");
                     }
                 }
             }

@@ -131,6 +131,7 @@ pub fn run_batch<P: Platform>(
     let mut dedup = Dedup::from_store(p.transactions()).unwrap_or_default();
 
     let labels = row_labels(urls, args.dry_run);
+    let width = p.progress().width();
     let list = p.progress().start(&labels);
     let sync_idx = urls.len();
 
@@ -151,7 +152,7 @@ pub fn run_batch<P: Platform>(
         if matches!(outcome, Outcome::Saved { .. }) {
             dedup.record(url);
         }
-        list.resolve(i, row_state(&outcome), &outcome_label(i + 1, &outcome));
+        list.resolve(i, row_state(&outcome), &live_label(i + 1, &outcome, width));
         outcomes.push(outcome);
     }
 
@@ -420,6 +421,32 @@ fn outcome_label(n: usize, o: &Outcome) -> String {
     }
 }
 
+/// The widest visible prefix a live row can carry (indent + marker + space).
+const LIVE_PREFIX: usize = 6;
+
+/// The live-row label for row `n`, made to fit `width`. When the full one-liner
+/// would overflow the terminal it drops to a dense form that keeps the essentials
+/// (retailer · sum · count), so a wrapped row never breaks the in-place redraw.
+/// The durable report still uses the full [`outcome_label`].
+fn live_label(n: usize, o: &Outcome, width: Option<usize>) -> String {
+    let full = outcome_label(n, o);
+    let fits = width.is_none_or(|w| full.chars().count() + LIVE_PREFIX <= w);
+    if fits {
+        return full;
+    }
+    match o {
+        // Drop the timestamp and currency; `k×` for the item count.
+        Outcome::Saved {
+            retailer,
+            total,
+            files,
+            ..
+        } => format!("#{n} · {} · {:.2} · {}×", retailer, total, files),
+        // The other forms are already short; the adapter clamps if still tight.
+        _ => full,
+    }
+}
+
 /// Commit (and optionally push) `data_dir` quietly. Returns any error. Pure
 /// plumbing — the decision to call it lives in [`SyncPlan`].
 fn sync_data<P: Platform>(
@@ -545,6 +572,23 @@ mod tests {
             line: "Sync · nothing to commit".to_string(),
             error: None,
         }
+    }
+
+    #[test]
+    fn live_label_full_when_wide_dense_when_narrow() {
+        let o = saved("2024-03-15T14:30:00", "Maxi"); // total 100.0, RSD, 1 file
+
+        // Plenty of width → full one-liner (timestamp + currency present).
+        let wide = live_label(1, &o, Some(200));
+        assert!(wide.contains("2024-03-15 14:30") && wide.contains("RSD"));
+
+        // Narrow → dense form keeps retailer/sum/count, drops time + currency.
+        let narrow = live_label(1, &o, Some(24));
+        assert!(narrow.contains("Maxi") && narrow.contains("100.00") && narrow.contains('×'));
+        assert!(!narrow.contains("RSD") && !narrow.contains("14:30"));
+
+        // Unknown width behaves like wide (no clamping decision here).
+        assert_eq!(live_label(1, &o, None), wide);
     }
 
     #[test]
