@@ -5,7 +5,8 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::invoice::{mapper, parser};
 use crate::ports::{
-    FailedLog, Network, Platform, Progress, ProgressTask, QueueStore, Reporter, TransactionStore,
+    FailedLog, Network, Platform, Progress, ProgressList, QueueStore, Reporter, RowState,
+    TransactionStore,
 };
 
 /// The result of attempting to load URLs from a file.
@@ -42,6 +43,12 @@ impl Outcome {
     }
 }
 
+/// The whole batch's result: every URL's [`Outcome`] plus the single sync step.
+pub struct BatchResult {
+    pub outcomes: Vec<Outcome>,
+    sync: SyncReport,
+}
+
 /// Parse `contents` (a file of one URL per line), stripping blank lines and
 /// `#`-comments. Pure — the file read happens in the caller.
 fn parse_url_list(contents: &str) -> LoadedUrls {
@@ -60,8 +67,6 @@ fn parse_url_list(contents: &str) -> LoadedUrls {
 }
 
 pub fn run<P: Platform>(args: InsertArgs, config: &Config, p: &P) -> Result<()> {
-    let reporter = p.reporter();
-
     let urls = match resolve_urls(&args, p)? {
         Some(urls) => urls,
         None => return Ok(()), // a file was given but held no URLs — nothing to do
@@ -71,10 +76,10 @@ pub fn run<P: Platform>(args: InsertArgs, config: &Config, p: &P) -> Result<()> 
     // The whole flow: parse + write every URL, then one git sync at the end.
     // A single URL is just a batch of one — the pipeline never interleaves
     // parse and sync.
-    let outcomes = run_batch(&urls, &args, config, p);
-    reporter.out(&render_report(&outcomes, batch));
+    let result = run_batch(&urls, &args, config, p);
+    p.reporter().out(&render_report(&result, batch));
 
-    let failed = outcomes.iter().filter(|o| o.is_failure()).count();
+    let failed = result.outcomes.iter().filter(|o| o.is_failure()).count();
     if failed > 0 {
         let msg = if batch {
             format!("{failed} URL(s) failed to process")
@@ -111,52 +116,109 @@ fn resolve_urls<P: Platform>(args: &InsertArgs, p: &P) -> Result<Option<Vec<Stri
 /// Parse + write every URL (no per-URL sync), then run a single git sync for the
 /// whole set. The unit of work shared by `insert` and `queue process`: many
 /// parses, then one sync — never parse/sync interleaved.
+///
+/// Drives one live [`ProgressList`]: a row per URL (abbreviated link → in-place
+/// summary), plus a trailing Sync row. The list is transient stderr eye-candy;
+/// the durable report is rendered from the returned [`BatchResult`].
 pub fn run_batch<P: Platform>(
     urls: &[String],
     args: &InsertArgs,
     config: &Config,
     p: &P,
-) -> Vec<Outcome> {
-    let reporter = p.reporter();
+) -> BatchResult {
+    // Read the transaction directory ONCE, up front, and dedup against this
+    // in-RAM snapshot for the whole batch.
+    let mut dedup = Dedup::from_store(p.transactions()).unwrap_or_default();
+
+    let labels = row_labels(urls, args.dry_run);
+    let list = p.progress().start(&labels);
+    let sync_idx = urls.len();
+
     let mut outcomes = Vec::with_capacity(urls.len());
-    for url in urls {
-        match run_one(url, args, p) {
-            Ok(outcome) => outcomes.push(outcome),
-            Err(e) => {
-                reporter.status(&format!("Error processing {url}: {e}"));
-                outcomes.push(Outcome::Failed { url: url.clone() });
+    for (i, url) in urls.iter().enumerate() {
+        list.activate(i);
+        let outcome = match run_one(url, args, &dedup, p) {
+            Ok(o) => o,
+            Err(_) => {
+                // run_one only errors on genuine I/O (queue/store) — treat the
+                // URL as failed and surface it in the report, not mid-list.
+                if !url.is_empty() {
+                    let _ = p.failed().record(url);
+                }
+                Outcome::Failed { url: url.clone() }
             }
+        };
+        if matches!(outcome, Outcome::Saved { .. }) {
+            dedup.record(url);
         }
+        list.resolve(i, row_state(&outcome), &outcome_label(i + 1, &outcome));
+        outcomes.push(outcome);
     }
-    run_sync(&outcomes, args.no_sync, config, p);
-    outcomes
+
+    // One sync for the whole batch, shown as the final row.
+    let sync = run_sync(&outcomes, args.no_sync, config, p);
+    list.activate(sync_idx);
+    list.resolve(sync_idx, sync.state, &sync.line);
+    list.finish();
+
+    BatchResult { outcomes, sync }
 }
 
-/// Carry out the one git operation a finished batch warrants (per [`SyncPlan`]).
-fn run_sync<P: Platform>(outcomes: &[Outcome], no_sync: bool, config: &Config, p: &P) {
+/// The sync row's outcome: its final state, its one-line label, and any captured
+/// git output to surface (only present on failure).
+struct SyncReport {
+    state: RowState,
+    line: String,
+    error: Option<String>,
+}
+
+/// Carry out the one git operation a finished batch warrants (per [`SyncPlan`]),
+/// mapping the result to the Sync row's [`SyncReport`].
+fn run_sync<P: Platform>(
+    outcomes: &[Outcome],
+    no_sync: bool,
+    config: &Config,
+    p: &P,
+) -> SyncReport {
+    let ok = |line: &str| SyncReport {
+        state: RowState::Ok,
+        line: line.to_string(),
+        error: None,
+    };
+    let failed = |e: Error| SyncReport {
+        state: RowState::Fail,
+        line: "Sync · failed".to_string(),
+        error: Some(e.to_string()),
+    };
+
     match SyncPlan::for_outcomes(outcomes, no_sync) {
-        SyncPlan::Push => {
-            if let Some(e) = sync_data(config, p, /*push=*/ true, None) {
-                p.reporter().status(&format!("Warning: sync failed: {e}"));
-            }
-        }
+        SyncPlan::Push => match sync_data(config, p, /*push=*/ true, None) {
+            None => ok("Sync · pushed"),
+            Some(e) => failed(e),
+        },
         // Best-effort: commit whatever is pending locally while offline.
-        SyncPlan::CommitOnly => {
-            let _ = sync_data(config, p, /*push=*/ false, Some("Offline"));
-        }
-        SyncPlan::Nothing => {}
+        SyncPlan::CommitOnly => match sync_data(config, p, /*push=*/ false, Some("Offline")) {
+            None => ok("Sync · committed (offline)"),
+            Some(e) => failed(e),
+        },
+        SyncPlan::Nothing => SyncReport {
+            state: RowState::Skip,
+            line: "Sync · nothing to commit".to_string(),
+            error: None,
+        },
     }
 }
 
-/// Parse + write one URL. Performs no git sync — that is the batch's job (see
-/// [`run_sync`]) so the flow stays parse-then-sync, never interleaved.
-pub fn run_one<P: Platform>(url: &str, args: &InsertArgs, p: &P) -> Result<Outcome> {
+/// Parse + write one URL. Performs no git sync (that is the batch's job, see
+/// [`run_sync`]) and no live-display or stdout/stderr output (the batch's
+/// [`ProgressList`] owns the screen) — it only returns an [`Outcome`].
+pub fn run_one<P: Platform>(url: &str, args: &InsertArgs, dedup: &Dedup, p: &P) -> Result<Outcome> {
     if url.is_empty() {
         return Err(Error::Parse("URL must not be empty".to_string()));
     }
 
-    // ── Duplicate check ───────────────────────────────────────────────────────
-    if !args.force && is_duplicate(url, p.transactions())? {
+    // ── Duplicate check (against the in-RAM snapshot) ─────────────────────────
+    if !args.force && dedup.contains(url) {
         return Ok(Outcome::Skipped {
             url: url.to_string(),
         });
@@ -170,26 +232,19 @@ pub fn run_one<P: Platform>(url: &str, args: &InsertArgs, p: &P) -> Result<Outco
         });
     }
 
-    // ── Live progress checklist for the phases this run will perform ──────────
-    let phases = run_phases(args);
-    let task = p.progress().start(&phases);
-
     // ── Parse ─────────────────────────────────────────────────────────────────
     let invoice = match parser::parse(url, p.http()) {
         Ok(inv) => inv,
         Err(_) => {
-            task.finish();
             p.failed().record(url)?;
             return Ok(Outcome::Failed {
                 url: url.to_string(),
             });
         }
     };
-    task.complete(); // Parse ✓
 
     // ── Dry-run: print and stop before writing ────────────────────────────────
     if args.dry_run {
-        task.finish();
         mapper::print_invoice(&invoice, p.reporter());
         return Ok(Outcome::DryRun {
             date: invoice.date.clone(),
@@ -199,8 +254,6 @@ pub fn run_one<P: Platform>(url: &str, args: &InsertArgs, p: &P) -> Result<Outco
 
     // ── Write ─────────────────────────────────────────────────────────────────
     let written = mapper::write_invoice(&invoice, p.transactions())?;
-    task.complete(); // Save ✓
-    task.finish();
 
     Ok(Outcome::Saved {
         date: invoice.date,
@@ -209,6 +262,46 @@ pub fn run_one<P: Platform>(url: &str, args: &InsertArgs, p: &P) -> Result<Outco
         currency: invoice.currency,
         files: written.len(),
     })
+}
+
+// ── In-RAM duplicate index ──────────────────────────────────────────────────────
+
+/// Snapshot of the transaction directory (read once) used to detect re-inserts.
+///
+/// Preserves the historical substring semantics — a URL is a duplicate when it
+/// appears literally in any `.md` doc — but reads the directory a single time
+/// per batch instead of once per URL. `session` tracks URLs saved earlier in the
+/// same run so intra-batch duplicates are still caught.
+#[derive(Default)]
+pub struct Dedup {
+    md_contents: Vec<String>,
+    session: Vec<String>,
+}
+
+impl Dedup {
+    /// Read every `.md` doc's content from the store once.
+    pub fn from_store(store: &impl TransactionStore) -> Result<Self> {
+        let md_contents = store
+            .list()?
+            .into_iter()
+            .filter(|d| d.path.extension().and_then(|e| e.to_str()) == Some("md"))
+            .map(|d| d.content)
+            .collect();
+        Ok(Self {
+            md_contents,
+            session: Vec::new(),
+        })
+    }
+
+    /// True when `url` appears in any snapshot doc or was saved this run.
+    fn contains(&self, url: &str) -> bool {
+        self.md_contents.iter().any(|c| c.contains(url)) || self.session.iter().any(|u| u == url)
+    }
+
+    /// Note a URL just saved this run, so a later copy counts as a duplicate.
+    fn record(&mut self, url: &str) {
+        self.session.push(url.to_string());
+    }
 }
 
 // ── Sync decision (pure) ────────────────────────────────────────────────────────
@@ -239,15 +332,91 @@ impl SyncPlan {
     }
 }
 
-// ── Report rendering (pure) ─────────────────────────────────────────────────────
+// ── Row / report rendering (pure) ───────────────────────────────────────────────
 
-/// The phase labels shown in the live checklist for one URL. Sync is a
-/// batch-level step (see [`run_sync`]), so it never appears here.
-fn run_phases(args: &InsertArgs) -> Vec<&'static str> {
-    if args.dry_run {
-        vec!["Parse invoice"]
-    } else {
-        vec!["Parse invoice", "Save line items"]
+/// Compact a long URL to `<head>…<tail>` — the leading host chars plus the final
+/// 8 — so rows stay a fixed, terminal-friendly width. Short URLs pass through.
+fn abbreviate(url: &str) -> String {
+    const HEAD: usize = 11; // e.g. "https://suf"
+    const TAIL: usize = 8;
+    let chars: Vec<char> = url.chars().collect();
+    if chars.len() <= HEAD + TAIL + 1 {
+        return url.to_string();
+    }
+    let head: String = chars[..HEAD].iter().collect();
+    let tail: String = chars[chars.len() - TAIL..].iter().collect();
+    format!("{head}…{tail}")
+}
+
+/// The pending labels for the live list: one abbreviated link per URL followed
+/// by the Sync row. Empty in `--dry-run` (which prints invoices, so no list).
+fn row_labels(urls: &[String], dry_run: bool) -> Vec<String> {
+    if dry_run {
+        return Vec::new();
+    }
+    let mut labels: Vec<String> = urls.iter().map(|u| abbreviate(u)).collect();
+    labels.push("⟳ Sync".to_string());
+    labels
+}
+
+/// The state (glyph/colour) a resolved row/report line takes for an outcome.
+fn row_state(o: &Outcome) -> RowState {
+    match o {
+        Outcome::Saved { .. } => RowState::Ok,
+        Outcome::DryRun { .. } => RowState::Skip,
+        Outcome::Skipped { .. } | Outcome::Queued { .. } => RowState::Warn,
+        Outcome::Failed { .. } => RowState::Fail,
+    }
+}
+
+/// The plain report glyph mirroring a [`RowState`] (no ANSI — the live adapter
+/// colours its own).
+fn report_glyph(state: RowState) -> char {
+    match state {
+        RowState::Ok => '✓',
+        RowState::Warn => '⚠',
+        RowState::Fail => '✗',
+        RowState::Skip => '·',
+    }
+}
+
+/// `"2024-03-15T14:30:00"` → `"2024-03-15 14:30"` for compact display.
+fn short_datetime(iso: &str) -> String {
+    iso.get(..16).unwrap_or(iso).replacen('T', " ", 1)
+}
+
+/// The glyph-less label for row `n`'s outcome — shared by the live row (the
+/// adapter prepends the coloured glyph) and the durable report line.
+fn outcome_label(n: usize, o: &Outcome) -> String {
+    match o {
+        Outcome::Saved {
+            date,
+            retailer,
+            total,
+            currency,
+            files,
+        } => {
+            let unit = if *files == 1 { "item" } else { "items" };
+            format!(
+                "#{n} · {} · {} · {:.2} {} · {} {}",
+                short_datetime(date),
+                retailer,
+                total,
+                currency,
+                files,
+                unit
+            )
+        }
+        Outcome::DryRun { date, retailer } => {
+            format!(
+                "#{n} · {} · {} · dry-run (not written)",
+                short_datetime(date),
+                retailer
+            )
+        }
+        Outcome::Skipped { url } => format!("#{n} duplicate · {}", abbreviate(url)),
+        Outcome::Queued { url } => format!("#{n} queued (offline) · {}", abbreviate(url)),
+        Outcome::Failed { url } => format!("#{n} failed · {}", abbreviate(url)),
     }
 }
 
@@ -270,68 +439,30 @@ fn sync_data<P: Platform>(
     .err()
 }
 
-/// Build the final report: a minimal one-liner per URL, written invoices first
-/// sorted by date (oldest first), then skipped/queued/failed, plus a summary
-/// footer in batch (`--file`) mode.
-fn render_report(outcomes: &[Outcome], batch: bool) -> String {
-    let is_dated = |o: &&Outcome| matches!(o, Outcome::Saved { .. } | Outcome::DryRun { .. });
+/// Build the final report: a one-liner per URL in input order (matching the live
+/// list), then the Sync line (with any captured git error beneath it on
+/// failure), plus a summary footer in batch (`--file`) mode.
+fn render_report(result: &BatchResult, batch: bool) -> String {
+    let mut lines: Vec<String> = result
+        .outcomes
+        .iter()
+        .enumerate()
+        .map(|(i, o)| format!("{} {}", report_glyph(row_state(o)), outcome_label(i + 1, o)))
+        .collect();
 
-    let mut dated: Vec<&Outcome> = outcomes.iter().filter(is_dated).collect();
-    dated.sort_by(|a, b| date_key(a).cmp(date_key(b)));
-
-    let mut lines: Vec<String> = dated.iter().map(|o| outcome_line(o)).collect();
-    lines.extend(outcomes.iter().filter(|o| !is_dated(o)).map(outcome_line));
+    lines.push(format!(
+        "{} {}",
+        report_glyph(result.sync.state),
+        result.sync.line
+    ));
+    if let Some(err) = &result.sync.error {
+        lines.push(err.clone());
+    }
 
     if batch {
-        lines.push(footer(outcomes));
+        lines.push(footer(&result.outcomes));
     }
     lines.join("\n")
-}
-
-/// The ISO date used to sort dated outcomes (empty for the rest).
-fn date_key(o: &Outcome) -> &str {
-    match o {
-        Outcome::Saved { date, .. } | Outcome::DryRun { date, .. } => date,
-        _ => "",
-    }
-}
-
-/// `"2024-03-15T14:30:00"` → `"2024-03-15 14:30"` for compact display.
-fn short_datetime(iso: &str) -> String {
-    iso.get(..16).unwrap_or(iso).replacen('T', " ", 1)
-}
-
-fn outcome_line(o: &Outcome) -> String {
-    match o {
-        Outcome::Saved {
-            date,
-            retailer,
-            total,
-            currency,
-            files,
-        } => {
-            let unit = if *files == 1 { "file" } else { "files" };
-            format!(
-                "✓ {} · {} · {:.2} {} · {} {}",
-                short_datetime(date),
-                retailer,
-                total,
-                currency,
-                files,
-                unit
-            )
-        }
-        Outcome::DryRun { date, retailer } => {
-            format!(
-                "· {} · {} · dry-run (not written)",
-                short_datetime(date),
-                retailer
-            )
-        }
-        Outcome::Skipped { url } => format!("⚠ duplicate · {url}"),
-        Outcome::Queued { url } => format!("⏸ queued (offline) · {url}"),
-        Outcome::Failed { url } => format!("✗ failed · {url}"),
-    }
 }
 
 fn footer(outcomes: &[Outcome]) -> String {
@@ -352,17 +483,6 @@ fn footer(outcomes: &[Outcome]) -> String {
         footer.push_str(&format!(" · {queued} queued"));
     }
     footer
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// True when `url` appears literally in any `.md` doc in the store.
-fn is_duplicate(url: &str, store: &impl TransactionStore) -> Result<bool> {
-    Ok(store
-        .list()?
-        .iter()
-        .filter(|d| d.path.extension().and_then(|e| e.to_str()) == Some("md"))
-        .any(|d| d.content.contains(url)))
 }
 
 #[cfg(test)]
@@ -415,37 +535,89 @@ mod tests {
         }
     }
 
+    fn batch_result(outcomes: Vec<Outcome>, sync: SyncReport) -> BatchResult {
+        BatchResult { outcomes, sync }
+    }
+
+    fn no_sync() -> SyncReport {
+        SyncReport {
+            state: RowState::Skip,
+            line: "Sync · nothing to commit".to_string(),
+            error: None,
+        }
+    }
+
     #[test]
-    fn report_sorts_saved_by_date_oldest_first() {
+    fn abbreviate_keeps_head_and_tail() {
+        let url = "https://suf.purs.gov.rs/v/?vl=A9kZlongtokenQw3xY9Kp";
+        assert_eq!(abbreviate(url), "https://suf…Qw3xY9Kp");
+    }
+
+    #[test]
+    fn abbreviate_passes_short_urls_through() {
+        assert_eq!(abbreviate("http://x/1"), "http://x/1");
+    }
+
+    #[test]
+    fn dedup_detects_disk_and_session_hits() {
+        let mut dedup = Dedup {
+            md_contents: vec!["link: \"http://x/1\"".to_string()],
+            session: Vec::new(),
+        };
+        assert!(dedup.contains("http://x/1"));
+        assert!(!dedup.contains("http://x/2"));
+        dedup.record("http://x/2");
+        assert!(dedup.contains("http://x/2"));
+    }
+
+    #[test]
+    fn report_lists_outcomes_in_input_order_with_sync_line() {
         let outcomes = vec![
             saved("2024-03-15T14:30:00", "Maxi"),
             saved("2024-03-12T09:02:00", "Idea"),
         ];
-        let report = render_report(&outcomes, false);
-        let first = report.lines().next().unwrap();
-        assert!(first.contains("Idea"), "oldest should be first: {report}");
-        assert!(first.contains("2024-03-12 09:02"));
+        let sync = SyncReport {
+            state: RowState::Ok,
+            line: "Sync · pushed".to_string(),
+            error: None,
+        };
+        let report = render_report(&batch_result(outcomes, sync), true);
+        let lines: Vec<&str> = report.lines().collect();
+        // Input order: Maxi (#1) before Idea (#2), no date re-sort.
+        assert!(lines[0].contains("#1") && lines[0].contains("Maxi"));
+        assert!(lines[1].contains("#2") && lines[1].contains("Idea"));
+        assert!(lines[2].contains("Sync · pushed"));
+        assert_eq!(
+            *lines.last().unwrap(),
+            "Processed 2 · 2 saved · 0 skipped · 0 failed"
+        );
     }
 
     #[test]
-    fn report_groups_non_saved_after_saved_with_footer() {
-        let outcomes = vec![
-            Outcome::Failed {
-                url: "http://x/2".to_string(),
-            },
-            saved("2024-03-15T14:30:00", "Maxi"),
-            Outcome::Skipped {
-                url: "http://x/3".to_string(),
-            },
-        ];
-        let report = render_report(&outcomes, true);
-        let lines: Vec<&str> = report.lines().collect();
-        assert!(lines[0].starts_with('✓')); // saved first
-        assert!(lines[1].starts_with('⚠') || lines[1].starts_with('✗'));
-        assert_eq!(
-            *lines.last().unwrap(),
-            "Processed 3 · 1 saved · 1 skipped · 1 failed"
+    fn report_surfaces_git_error_beneath_failed_sync() {
+        let sync = SyncReport {
+            state: RowState::Fail,
+            line: "Sync · failed".to_string(),
+            error: Some("`git push origin main` failed: auth denied".to_string()),
+        };
+        let report = render_report(
+            &batch_result(vec![saved("2024-03-15T14:30:00", "Maxi")], sync),
+            false,
         );
+        assert!(report.contains("✗ Sync · failed"));
+        assert!(report.contains("auth denied"));
+    }
+
+    #[test]
+    fn report_pluralises_items() {
+        let outcomes = vec![Outcome::Saved {
+            date: "2024-03-15T14:30:00".to_string(),
+            retailer: "Maxi".to_string(),
+            total: 179.98,
+            currency: "RSD".to_string(),
+            files: 2,
+        }];
+        assert!(render_report(&batch_result(outcomes, no_sync()), false).contains("2 items"));
     }
 
     #[test]
@@ -488,17 +660,5 @@ mod tests {
             SyncPlan::for_outcomes(&outcomes, /*no_sync=*/ true),
             SyncPlan::Nothing
         ));
-    }
-
-    #[test]
-    fn report_pluralises_files() {
-        let outcomes = vec![Outcome::Saved {
-            date: "2024-03-15T14:30:00".to_string(),
-            retailer: "Maxi".to_string(),
-            total: 179.98,
-            currency: "RSD".to_string(),
-            files: 2,
-        }];
-        assert!(render_report(&outcomes, false).contains("2 files"));
     }
 }

@@ -9,14 +9,24 @@ use crate::ports::{RemoteReachable, Vcs};
 pub struct GitCli;
 
 impl GitCli {
-    /// Run a git subcommand for its exit status only.
+    /// Run a git subcommand, discarding its output on success and folding it
+    /// into the error on failure.
+    ///
+    /// Output is **captured** (not inherited) so it can't corrupt a live
+    /// progress display and can be surfaced only when something goes wrong.
+    /// Trade-off: an interactive credential prompt during `pull`/`push` won't be
+    /// visible — this tool targets non-interactive auth (ssh-agent / git
+    /// credential helper), matching `reachable`'s nulled output.
     fn run(&self, dir: &Path, args: &[&str]) -> Result<()> {
-        let status = Command::new("git").arg("-C").arg(dir).args(args).status()?;
-        if !status.success() {
+        let out = Command::new("git").arg("-C").arg(dir).args(args).output()?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
             return Err(Error::Git(format!(
-                "`git {}` exited with {}",
+                "`git {}` failed: {}{}",
                 args.join(" "),
-                status
+                stderr.trim(),
+                stdout.trim(),
             )));
         }
         Ok(())

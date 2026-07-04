@@ -102,25 +102,43 @@ pub trait Styler {
     fn paint(&self, style: Style, text: &str) -> String;
 }
 
-/// A live, multi-line phase checklist with one animated ("spinning") phase.
-///
-/// Pure terminal eye-candy: the production adapter draws a fidget-spinner and
-/// redraws the block in place; when output is not a TTY it returns a no-op task
-/// so piped/redirected output stays clean. All real results still flow through
-/// [`Reporter`] — a `Progress` block is transient and erased on `finish`.
-pub trait Progress {
-    type Task: ProgressTask;
-    /// Render `phases` as a checklist (the first phase starts active) and begin
-    /// animating. The returned handle drives it; dropping or `finish`ing the
-    /// handle stops the animation and erases the block.
-    fn start(&self, phases: &[&str]) -> Self::Task;
+/// Final state of a resolved [`ProgressList`] row (controls its glyph/colour).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowState {
+    /// Succeeded (✓).
+    Ok,
+    /// Completed with a caveat — duplicate, queued offline (⚠).
+    Warn,
+    /// Failed (✗).
+    Fail,
+    /// Nothing to do / not attempted (·).
+    Skip,
 }
 
-/// Handle to an in-progress [`Progress`] checklist.
-pub trait ProgressTask {
-    /// Mark the active phase done (✓) and advance to the next one.
-    fn complete(&self);
-    /// Stop the animation and erase the checklist block.
+/// A live, multi-line list with one addressable row per item and one animated
+/// ("spinning") active row at a time.
+///
+/// Pure terminal eye-candy: the production adapter draws a fidget-spinner on the
+/// active row and redraws the block in place; when output is not a TTY it
+/// returns a no-op list so piped/redirected output stays clean. All real results
+/// still flow through [`Reporter`] — a `Progress` block is transient and erased
+/// on `finish`.
+pub trait Progress {
+    type List: ProgressList;
+    /// Render `rows` as a list (every row starts "pending") and begin animating.
+    /// The returned handle drives it; dropping or `finish`ing the handle stops
+    /// the animation and erases the block. Empty `rows` (or non-TTY output)
+    /// yields a no-op list.
+    fn start(&self, rows: &[String]) -> Self::List;
+}
+
+/// Handle to an in-progress [`Progress`] list.
+pub trait ProgressList {
+    /// Make row `i` the active (spinning) row.
+    fn activate(&self, i: usize);
+    /// Freeze row `i`: replace its label with `label` and mark its final state.
+    fn resolve(&self, i: usize, state: RowState, label: &str);
+    /// Stop the animation and erase the list block.
     fn finish(self);
 }
 
@@ -226,6 +244,7 @@ pub trait Platform {
     type Prompt: Prompt;
     type Reporter: Reporter;
     type Styler: Styler;
+    /// The live row-list display (see [`Progress`]).
     type Progress: Progress;
     type Transactions: TransactionStore;
     type Queue: QueueStore;

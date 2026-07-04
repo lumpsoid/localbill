@@ -139,7 +139,7 @@ fn process_urls<P: Platform>(
         force: false,
     };
 
-    let outcomes = crate::commands::insert::run_batch(urls, &args, config, p);
+    let outcomes = crate::commands::insert::run_batch(urls, &args, config, p).outcomes;
 
     let mut succeeded: Vec<String> = Vec::new();
     let mut failed: Vec<String> = Vec::new();

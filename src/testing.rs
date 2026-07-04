@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::ports::{
-    Clock, Env, EnvVar, FailedLog, Http, Network, Platform, Progress, ProgressTask, Prompt,
-    QueueStore, RemoteQueue, RemoteReachable, Reporter, SchemaSource, StoredDoc, Style, Styler,
-    TransactionStore, Vcs,
+    Clock, Env, EnvVar, FailedLog, Http, Network, Platform, Progress, ProgressList, Prompt,
+    QueueStore, RemoteQueue, RemoteReachable, Reporter, RowState, SchemaSource, StoredDoc, Style,
+    Styler, TransactionStore, Vcs,
 };
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
@@ -174,30 +174,29 @@ impl Reporter for RecordingReporter {
     }
 }
 
-/// Records the phase lists handed to `start`; the task itself is a no-op (no
-/// thread, no terminal writes).
+/// Records the initial row labels handed to `start`; the list itself is a no-op
+/// (no thread, no terminal writes).
 #[derive(Default)]
 pub struct RecordingProgress {
     pub started: RefCell<Vec<Vec<String>>>,
 }
 impl RecordingProgress {
-    /// The phases of the most recent `start` (empty if none).
-    pub fn last_phases(&self) -> Vec<String> {
+    /// The rows of the most recent `start` (empty if none).
+    pub fn last_rows(&self) -> Vec<String> {
         self.started.borrow().last().cloned().unwrap_or_default()
     }
 }
 impl Progress for RecordingProgress {
-    type Task = NoopTask;
-    fn start(&self, phases: &[&str]) -> NoopTask {
-        self.started
-            .borrow_mut()
-            .push(phases.iter().map(|s| s.to_string()).collect());
-        NoopTask
+    type List = NoopList;
+    fn start(&self, rows: &[String]) -> NoopList {
+        self.started.borrow_mut().push(rows.to_vec());
+        NoopList
     }
 }
-pub struct NoopTask;
-impl ProgressTask for NoopTask {
-    fn complete(&self) {}
+pub struct NoopList;
+impl ProgressList for NoopList {
+    fn activate(&self, _i: usize) {}
+    fn resolve(&self, _i: usize, _state: RowState, _label: &str) {}
     fn finish(self) {}
 }
 
@@ -538,7 +537,8 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = insert::run_one("http://x/1", &insert_args(), &tp).unwrap();
+        let outcome =
+            insert::run_one("http://x/1", &insert_args(), &insert::Dedup::default(), &tp).unwrap();
 
         assert!(matches!(outcome, insert::Outcome::Queued { .. }));
         assert_eq!(tp.queue.urls.borrow().as_slice(), ["http://x/1"]);
@@ -555,7 +555,8 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = insert::run_one("http://x/1", &insert_args(), &tp).unwrap();
+        let dedup = insert::Dedup::from_store(&tp.transactions).unwrap();
+        let outcome = insert::run_one("http://x/1", &insert_args(), &dedup, &tp).unwrap();
 
         // No new doc written.
         assert!(matches!(outcome, insert::Outcome::Skipped { .. }));
@@ -569,17 +570,43 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = insert::run_one("http://x/1", &insert_args(), &tp).unwrap();
+        let outcome =
+            insert::run_one("http://x/1", &insert_args(), &insert::Dedup::default(), &tp).unwrap();
 
         assert!(matches!(outcome, insert::Outcome::Saved { files: 1, .. }));
         let docs = tp.transactions.docs.borrow();
         assert_eq!(docs.len(), 1);
         assert!(docs[0].content.contains("name: \"Mleko\""));
-        // Sync is a batch-level step, so the per-URL checklist is parse + save only.
+    }
+
+    #[test]
+    fn run_batch_builds_row_list_and_dedups_intra_batch() {
+        // Two pages so the first URL parses+saves; the identical second URL must
+        // be caught as a duplicate against the in-RAM snapshot updated this run.
+        let tp = TestPlatform {
+            http: FakeHttp::with_pages(
+                vec![invoice_page(true), invoice_page(true)],
+                vec![items_json(), items_json()],
+            ),
+            ..Default::default()
+        };
+        let cfg = test_config();
+        let urls = vec!["http://x/1".to_string(), "http://x/1".to_string()];
+
+        let result = insert::run_batch(&urls, &insert_args(), &cfg, &tp);
+
+        // One row per URL plus the Sync row, links abbreviated.
         assert_eq!(
-            tp.progress.last_phases(),
-            ["Parse invoice", "Save line items"]
+            tp.progress.last_rows(),
+            ["http://x/1", "http://x/1", "⟳ Sync"]
         );
+        assert!(matches!(result.outcomes[0], insert::Outcome::Saved { .. }));
+        assert!(matches!(
+            result.outcomes[1],
+            insert::Outcome::Skipped { .. }
+        ));
+        // Only the first write landed on disk (the second was deduped).
+        assert_eq!(tp.transactions.docs.borrow().len(), 1);
     }
 
     #[test]
